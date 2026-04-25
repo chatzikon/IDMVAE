@@ -1,0 +1,33 @@
+# Direct third-party dependencies for IDMVAE (imports under src/, excluding src/baseline/).
+#
+# Regenerate the fully pinned lockfile:
+#   pip install pip-tools
+#   pip-compile --strip-extras --output-file requirements.txt requirements.in
+#
+# Optional: resolve against a specific CUDA torch index first, then compile:
+#   pip install torch==... torchvision==... --index-url https://download.pytorch.org/whl/cu124
+#   pip-compile ...
+
+# Keep CUDA wheels aligned (adjust versions / cu* index for your cluster).
+torch==2.5.1
+torchvision==0.20.1
+torchaudio==2.5.1
+numpy
+pandas
+scikit-learn
+scipy
+pillow
+matplotlib
+imageio
+tqdm
+wandb
+diffusers
+transformers
+accelerate
+huggingface-hub
+nltk
+umap-learn
+timm
+packaging
+openai-clip
+pycocoevalcap

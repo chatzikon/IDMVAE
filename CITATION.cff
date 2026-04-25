@@ -1,0 +1,39 @@
+cff-version: 1.2.0
+title: "IDMVAE — Official PyTorch code (ICLR 2026)"
+message: "If you use this software, please cite the ICLR 2026 paper below."
+type: software
+authors:
+  - family-names: Zhang
+    given-names: Yijie
+  - family-names: Shen
+    given-names: Yiyang
+  - family-names: Wang
+    given-names: Weiran
+# Set this after the public GitHub repository is created (GitHub citation + Zenodo).
+repository-code: "https://github.com/YOUR_ORG/YOUR_REPO"
+license: MIT
+version: 1.0.0
+date-released: 2026-04-24
+abstract: >
+  Official PyTorch implementation of Information-Disentangled Multimodal VAE (IDMVAE)
+  for the ICLR 2026 paper "Disentanglement of Variations with Multimodal Generative Modeling".
+keywords:
+  - multimodal variational autoencoder
+  - disentanglement
+  - multi-view information bottleneck
+  - diffusion models
+  - representation learning
+preferred-citation:
+  type: conference-paper
+  title: "Disentanglement of Variations with Multimodal Generative Modeling"
+  authors:
+    - family-names: Zhang
+      given-names: Yijie
+    - family-names: Shen
+      given-names: Yiyang
+    - family-names: Wang
+      given-names: Weiran
+  conference:
+    name: "International Conference on Learning Representations"
+  year: 2026
+  url: "https://openreview.net/forum?id=DcHGEcqdFf"
