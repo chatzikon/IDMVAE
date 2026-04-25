@@ -10,7 +10,7 @@ authors:
   - family-names: Wang
     given-names: Weiran
 # Set this after the public GitHub repository is created (GitHub citation + Zenodo).
-repository-code: "https://github.com/YOUR_ORG/YOUR_REPO"
+repository-code: "https://github.com/InterstellarJ2049/IDMVAE"
 license: MIT
 version: 1.0.0
 date-released: 2026-04-24
