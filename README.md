@@ -5,6 +5,7 @@ Official PyTorch implementation of **IDMVAE** (Information-Disentangled Multimod
 | Resource | Link |
 |----------|------|
 | OpenReview (paper + BibTeX) | [ICLR 2026 forum page](https://openreview.net/forum?id=DcHGEcqdFf) |
+| Supplementary materials & preprocessed assets | [ICLR2026_IDMVAE (SharePoint)](https://iowa-my.sharepoint.com/:f:/r/personal/wwang157_uiowa_edu/Documents/ICLR2026_IDMVAE?csf=1&web=1&e=Y1iD0G) |
 
 ## What this repository contains
 
@@ -30,9 +31,14 @@ pip install -r requirements.txt
 
 ## Data layout
 
-**We do not currently redistribute zipped datasets or provide direct download mirrors from this repository.** Obtain the original corpora from their official releases (e.g. CUB-200-2011, CelebAMask-HQ, TCGA, and MNIST-derived assets for PolyMNIST-style setups), then prepare paths locally.
+This repo ships **dataloaders and preparation scripts** only (no raw dataset archives in Git). Point them at data on disk using the environment variables below.
 
-This codebase **does** ship **dataset loaders** under `src/` (`dataset_PolyMNIST_quadrant.py`, `dataset_CUBcluster8.py`, `dataset_CelebAMask_HQ.py`, `dataset_TCGA_2_complete_views.py`, …) and **helper scripts** to build or convert assets:
+| Source | What you get |
+|--------|----------------|
+| [Dataset references](#dataset-references) | Official download links and BibTeX for each benchmark |
+| [ICLR2026_IDMVAE (SharePoint)](https://iowa-my.sharepoint.com/:f:/r/personal/wwang157_uiowa_edu/Documents/ICLR2026_IDMVAE?csf=1&web=1&e=Y1iD0G) | Preprocessed splits, checkpoints, and preparation notes |
+
+**Loaders** (`dataset_PolyMNIST_quadrant.py`, `dataset_CUBcluster8.py`, `dataset_CelebAMask_HQ.py`, `dataset_TCGA_2_complete_views.py`, …) and **helper scripts**:
 
 | Role | Location |
 |------|----------|
@@ -66,6 +72,90 @@ export DATADIR=/path/to/TCGA/complete_splits
 `DATADIR` for TCGA must contain `complete_views_split{k}_tr.npz`, `complete_views_split{k}_val.npz`, and `complete_views_split{k}_te.npz` for each split index `k` the script runs (default `k` in `0..4`).
 
 Use each training script’s `DATADIR` / `--datadir` (or documented overrides) for the **exact** split directory used in your run.
+
+## Dataset references
+
+Please cite the **original dataset publications** when you use these benchmarks (in addition to [citing IDMVAE](#citation) if you use this code). We do not host the raw corpora; use the official sources below.
+
+| Dataset | Role in this repo | Official source |
+|---------|-------------------|-----------------|
+| **MNIST** | Base digits for building PolyMNIST | **Citation:** [LeCun MNIST page](http://yann.lecun.com/exdb/mnist/) (directory often empty). **Downloads:** `torchvision.datasets.MNIST` or [CVDF MNIST mirror](https://github.com/cvdfoundation/mnist) |
+| **PolyMNIST** | 5-view colored MNIST (quadrant layout; see `dataset_PolyMNIST_quadrant.py`) | **Dataset introduced in** [Sutter et al., *Generalized Multimodal ELBO* (MoPoE)](https://arxiv.org/abs/2105.02470); prebuilt archives also via [MMVAE+](https://github.com/epalu/mmvaeplus#download-data) / [MoPoE](https://github.com/thomassutter/MoPoE) |
+| **CUB-200-2011** | Bird images + attributes (base corpus) | [Caltech CUB-200-2011](https://www.vision.caltech.edu/datasets/cub_200_2011/) |
+| **CUBcluster8 (256px)** | Image + caption pairs, 8-species cluster split (`dataset_CUBcluster8.py`) | Built on CUB-200-2011; cluster grouping follows the **CUBICC** line of work in [CMVAE](https://github.com/epalu/CMVAE#cubicc) (256×256 preprocessed tensors: `images.pt`, `captions.pt`, `labels_cluster.pt`, …) |
+| **CelebAMask-HQ** | Face images + parsing masks (`dataset_CelebAMask_HQ.py`) | [CelebAMask-HQ (GitHub)](https://github.com/switchablenorms/CelebAMask-HQ) |
+| **TCGA** | Two complete omics views in `.npz` splits (`dataset_TCGA_2_complete_views.py`) | [The Cancer Genome Atlas (TCGA)](https://www.cancer.gov/tcga) via [GDC](https://portal.gdc.cancer.gov/) |
+
+**Image–caption pairing for CUB:** widely attributed to Reed et al. (fine-grained captioning); include that citation if your work uses the caption modality.
+
+**TCGA note:** this repository expects **preprocessed** `complete_views_split{k}_{tr,val,te}.npz` files (two views per sample). Cite TCGA for the underlying data; for the exact view selection and splits, follow the protocol described in the [IDMVAE paper](https://openreview.net/forum?id=DcHGEcqdFf).
+
+**PolyMNIST:** cite **Sutter et al. (2021, MoPoE)** — that paper introduces the dataset ([arXiv:2105.02470](https://arxiv.org/abs/2105.02470)). Shi et al. (2019, MMVAE) is related multimodal work but not the PolyMNIST dataset definition.
+
+### BibTeX (datasets)
+
+```bibtex
+@article{lecun2010mnist,
+  title   = {{MNIST} Handwritten Digit Database},
+  author  = {LeCun, Yann and Cortes, Corinna and Burges, Christopher J. C.},
+  journal = {ATT Labs},
+  year    = {2010},
+  note    = {Historic host http://yann.lecun.com/exdb/mnist/ ; use torchvision or https://github.com/cvdfoundation/mnist for files}
+}
+
+@article{sutter2021mopoe,
+  title   = {Generalized Multimodal {ELBO}},
+  author  = {Sutter, Thomas M. and Daunhawer, Imant and Vogt, Julia E.},
+  journal = {Journal of Machine Learning Research},
+  volume  = {22},
+  number  = {202},
+  pages   = {1--60},
+  year    = {2021},
+  url     = {https://arxiv.org/abs/2105.02470}
+}
+
+@techreport{wah2011cub,
+  title       = {The {Caltech-UCSD} Birds-200-2011 Dataset},
+  author      = {Wah, Catherine and Branson, Steve and Welinder, Peter and Perona, Pietro and Belongie, Serge},
+  institution = {California Institute of Technology},
+  year        = {2011},
+  number      = {CNS-TR-2011-001},
+  url         = {https://www.vision.caltech.edu/datasets/cub_200_2011/}
+}
+
+@inproceedings{reed2016learning,
+  title     = {Learning Deep Representations of Fine-Grained Visual Descriptions},
+  author    = {Reed, Scott and Akata, Zeynep and Yan, Lajanugen and Wang, Lajan and Reed, Scott and Yu, Honglak and Darrell, Trevor},
+  booktitle = {IEEE Conference on Computer Vision and Pattern Recognition},
+  year      = {2016}
+}
+
+@inproceedings{palumbo2024cmvae,
+  title     = {Deep Generative Clustering with Multimodal Diffusion Variational Autoencoders},
+  author    = {Palumbo, Emanuele and Manduchi, Laura and Laguna, Sonia and Chopard, Daphn{\'e} and Vogt, Julia E.},
+  booktitle = {International Conference on Learning Representations},
+  year      = {2024},
+  url       = {https://openreview.net/forum?id=k5THrhXDV3}
+}
+
+@inproceedings{lee2020maskgan,
+  title     = {Mask{GAN}: Towards Diverse and Interactive Facial Image Manipulation},
+  author    = {Lee, Cheng-Han and Liu, Ziwei and Wu, Lingyun and Luo, Ping},
+  booktitle = {IEEE Conference on Computer Vision and Pattern Recognition},
+  year      = {2020}
+}
+
+@article{weinstein2013tcga,
+  title   = {The Cancer Genome Atlas Pan-Cancer Analysis Project},
+  author  = {Weinstein, John N. and Collisson, Eric A. and Mills, Gordon B. and others},
+  journal = {Nature Genetics},
+  volume  = {45},
+  number  = {10},
+  pages   = {1113--1120},
+  year    = {2013},
+  doi     = {10.1038/ng.2764}
+}
+```
 
 ## Running experiments
 
