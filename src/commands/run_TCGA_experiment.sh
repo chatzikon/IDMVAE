@@ -19,8 +19,8 @@ CROSS_MI_SCALE=10.0
 AUG_MI_SCALE=0.001
 AUG_MI_SAMPLING_SCHEME="posterior"
 AUG_MI_LT="CL"
-DATADIR="${DATADIR:-/data/backed_up/shared/Data/TCGA/FINAL/complete_splits}"
-CHECKPOINT_DIR="${CHECKPOINT_DIR:-/data/backed_up/shared/Data/TCGA/ckpts/}"
+DATADIR="/data/backed_up/shared/Data/TCGA/FINAL/complete_splits"
+CHECKPOINT_DIR="/data/backed_up/shared/Data/TCGA/ckpts/"
 
 for SPLIT in 0 1 2 3 4; do
      RUN_ID=${DATE}_idmvae_pp_${PRIORPOSTERIOR}_l_${LIKELIHOOD}_b_${BETA}_augmi_${AUG_MI_SAMPLING_SCHEME}_${AUG_MI_SCALE}_crossmi_${CROSS_MI_SCALE}_dlw_${DLW}_w_${LATENT_DIM_W}_z_${LATENT_DIM_Z}_split${SPLIT}
