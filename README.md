@@ -85,7 +85,7 @@ export DATADIR=/path/to/TCGA/complete_splits
 
 Use each training script’s `DATADIR` / `--datadir` (or documented overrides) for the **exact** split directory used in your run.
 
-## Dataset references
+## References
 
 Please cite the **original dataset publications** when you use these benchmarks.
 
