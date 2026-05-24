@@ -50,8 +50,9 @@ This repo ships **dataloaders and preparation scripts** only (no raw dataset arc
 | [Dataset references](#dataset-references) | Official download links and BibTeX for each benchmark |
 | [ICLR2026_IDMVAE (SharePoint)](https://iowa-my.sharepoint.com/:f:/g/personal/wwang157_uiowa_edu/IgCBk365vyJPQ55IlXTG0E3eAVobHl9UbX3AgLh25ZASjI4?e=IcY4zc) | Preprocessed splits, checkpoints, and preparation notes |
 
-**Loaders** (`dataset_PolyMNIST_quadrant.py`, `dataset_CUBcluster8.py`, `dataset_TCGA_2_complete_views.py`, …) and **helper scripts**:
+**Loaders** (`dataset_PolyMNIST_quadrant.py`, `dataset_CUBcluster8.py`, `dataset_TCGA_2_complete_views.py`, …) and helper scripts.
 
+<!--
 | Role | Location |
 |------|----------|
 | PolyMNIST quadrant generation | `src/commands/functions_helper/gen_polyMNIST_quadrant.sh` |
@@ -59,9 +60,9 @@ This repo ships **dataloaders and preparation scripts** only (no raw dataset arc
 | PolyMNIST digit classifier pretraining | `src/commands/functions_helper/pretrain_classifier_polyMNIST.sh` |
 | Latent pre-generation (32×32 ×4, for diffusion / denoisers) | `src/commands/functions_post_eval/pregen_4x32x32_dataset_CUB256.sh` |
 
-<!--
 Read the comments at the top of each script for `OUT_ROOT` / `SRC_ROOT` and other env overrides. 
-**TCGA** expects pre-built `.npz` tensors per split (see below); preparation of those arrays is outside the snippets above—use your own pipeline to match `train_IDMVAE_TCGA.py`. -->
+**TCGA** expects pre-built `.npz` tensors per split (see below); preparation of those arrays is outside the snippets above—use your own pipeline to match `train_IDMVAE_TCGA.py`.
+-->
 
 | Dataset | Notes |
 |---------|--------|
