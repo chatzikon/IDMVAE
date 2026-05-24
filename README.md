@@ -59,7 +59,9 @@ This repo ships **dataloaders and preparation scripts** only (no raw dataset arc
 | PolyMNIST digit classifier pretraining | `src/commands/functions_helper/pretrain_classifier_polyMNIST.sh` |
 | Latent pre-generation (32×32 ×4, for diffusion / denoisers) | `src/commands/functions_post_eval/pregen_4x32x32_dataset_CUB256.sh` |
 
-Read the comments at the top of each script for `OUT_ROOT` / `SRC_ROOT` and other env overrides. **TCGA** expects pre-built `.npz` tensors per split (see below); preparation of those arrays is outside the snippets above—use your own pipeline to match `train_IDMVAE_TCGA.py`.
+<!--
+Read the comments at the top of each script for `OUT_ROOT` / `SRC_ROOT` and other env overrides. 
+**TCGA** expects pre-built `.npz` tensors per split (see below); preparation of those arrays is outside the snippets above—use your own pipeline to match `train_IDMVAE_TCGA.py`. -->
 
 | Dataset | Notes |
 |---------|--------|
@@ -84,7 +86,7 @@ Use each training script’s `DATADIR` / `--datadir` (or documented overrides) f
 
 ## Dataset references
 
-Please cite the **original dataset publications** when you use these benchmarks (in addition to [citing IDMVAE](#citation) if you use this code). We do not host the raw corpora; use the official sources below.
+Please cite the **original dataset publications** when you use these benchmarks.
 
 | Dataset | Role in this repo | Official source |
 |---------|-------------------|-----------------|
