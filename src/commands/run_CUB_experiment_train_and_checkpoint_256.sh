@@ -1,7 +1,6 @@
 #!/bin/bash
 # CUBcluster8 @ 256px (CUB-HQ style). Paper Appendix C.2 defaults: 50 epochs, batch 256, β=1.0,
 # latent 256/256, λ1=40 (cross_mi), λ2=10 (gen_aug CL), diffusion weight 0.1, Adam lr 1e-3 (see train script).
-# cd "$(dirname "$0")/.." || exit 1
 
 # Unified CUB 256 launcher:
 # - train / resume / develop / test / print_params
@@ -10,13 +9,9 @@
 MODE="train"  # train, resume, test, develop, print_params — set train when not evaluating a checkpoint
 test_time_dataset_state="eval"  # eval, test
 
-# Optional path overrides for portability:
-#   export CUB_ROOT=/path/to/CUB
-#   export CUB_TSNE_ROOT=/path/to/t_SNE
-#   export DENOISER_ROOT=/path/to/denoisers
-CUB_ROOT="${CUB_ROOT:-/data/backed_up/shared/Data/CUB}"
+CUB_ROOT="/data/backed_up/shared/Data/CUB"
+DENOISER_ROOT="/data/backed_up/shared/Data/CUB/weiran_dit_denoisers"
 CUB_TSNE_ROOT="${CUB_TSNE_ROOT:-../outputs/t_SNE}"
-DENOISER_ROOT="${DENOISER_ROOT:-/data/backed_up/shared/Data/CUB/weiran_dit_denoisers}"
 
 DATASET="CUBcluster8_256"
 marker=""
