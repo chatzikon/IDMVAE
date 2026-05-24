@@ -30,7 +30,7 @@ MODE="resume" # Options: "train", "resume", "test", "develop", "print_params"
 # Wandb project name
 MARKER="" # __test
 DATASET="CelebAMask"
-CELEBAMASK_ROOT="${CELEBAMASK_ROOT:-/data/backed_up/shared/Data/CelebAMask_HQ/CelebAMask-HQ_from_SBM}" # (not .pt file)
+CELEBAMASK_ROOT="/data/backed_up/shared/Data/CelebAMask_HQ/CelebAMask-HQ_from_SBM" # (not .pt file)
 DENOISER_ROOT="${DENOISER_ROOT:-${CELEBAMASK_ROOT}/pregen_4x32x32/_denoiser}"
 DATADIR="${CELEBAMASK_ROOT}/"
 EXPERIMENT="CelebAMask_IDMVAE_release${MARKER}"
