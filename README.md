@@ -88,7 +88,7 @@ export DATADIR=/path/to/TCGA/complete_splits
 
 ### References
 
-Please cite the **original dataset publications** when you use these benchmarks.
+Please cite the original dataset publications when you use these benchmarks.
 
 | Dataset | Role in this repo | Official source |
 |---------|-------------------|-----------------|
