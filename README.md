@@ -88,7 +88,7 @@ Please cite the **original dataset publications** when you use these benchmarks 
 
 | Dataset | Role in this repo | Official source |
 |---------|-------------------|-----------------|
-| **PolyMNIST** | 5-view colored MNIST (quadrant layout; see `dataset_PolyMNIST_quadrant.py`) | **Dataset introduced in** [Sutter et al., *Generalized Multimodal ELBO* (MoPoE)](https://arxiv.org/abs/2105.02470); prebuilt archives also via [MMVAE+](https://github.com/epalu/mmvaeplus#download-data) / [MoPoE](https://github.com/thomassutter/MoPoE) |
+| **PolyMNIST** | 5-view colored MNIST (quadrant layout; see `dataset_PolyMNIST_quadrant.py`) | **Dataset introduced in** [Sutter et al., *Generalized Multimodal ELBO* (MoPoE)](https://openreview.net/forum?id=5Y21V0RDBV); prebuilt archives also via [MMVAE+](https://github.com/epalu/mmvaeplus#download-data) / [MoPoE](https://github.com/thomassutter/MoPoE) |
 | **CUB-200-2011** | Bird images + attributes (base corpus) | [Caltech CUB-200-2011](https://www.vision.caltech.edu/datasets/cub_200_2011/) |
 | **CUBcluster8 (256px)** | Image + caption pairs, 8-species cluster split (`dataset_CUBcluster8.py`) | Built on CUB-200-2011; cluster grouping follows the **CUBICC** line of work in [CMVAE](https://github.com/epalu/CMVAE#cubicc) (256×256 preprocessed tensors: `images.pt`, `captions.pt`, `labels_cluster.pt`, …) |
 | **TCGA** | Two complete omics views in `.npz` splits (`dataset_TCGA_2_complete_views.py`) | [The Cancer Genome Atlas (TCGA)](https://www.cancer.gov/tcga) via [GDC](https://portal.gdc.cancer.gov/) |
@@ -102,15 +102,12 @@ Please cite the **original dataset publications** when you use these benchmarks 
 ### BibTeX (datasets)
 
 ```bibtex
-@article{sutter2021mopoe,
-  title   = {Generalized Multimodal {ELBO}},
-  author  = {Sutter, Thomas M. and Daunhawer, Imant and Vogt, Julia E.},
-  journal = {Journal of Machine Learning Research},
-  volume  = {22},
-  number  = {202},
-  pages   = {1--60},
-  year    = {2021},
-  url     = {https://arxiv.org/abs/2105.02470}
+@inproceedings{sutter2021generalized,
+  title={Generalized Multimodal {ELBO}},
+  author={Thomas M. Sutter and Imant Daunhawer and Julia E Vogt},
+  booktitle={International Conference on Learning Representations},
+  year={2021},
+  url={https://openreview.net/forum?id=5Y21V0RDBV}
 }
 
 @techreport{wah2011cub,
@@ -124,17 +121,17 @@ Please cite the **original dataset publications** when you use these benchmarks 
 
 @inproceedings{reed2016learning,
   title     = {Learning Deep Representations of Fine-Grained Visual Descriptions},
-  author    = {Reed, Scott and Akata, Zeynep and Yan, Lajanugen and Wang, Lajan and Reed, Scott and Yu, Honglak and Darrell, Trevor},
+  author    = {Scott Reed and Zeynep Akata and Bernt Schiele and Honglak Lee},
   booktitle = {IEEE Conference on Computer Vision and Pattern Recognition},
   year      = {2016}
 }
 
-@inproceedings{palumbo2024cmvae,
-  title     = {Deep Generative Clustering with Multimodal Diffusion Variational Autoencoders},
-  author    = {Palumbo, Emanuele and Manduchi, Laura and Laguna, Sonia and Chopard, Daphn{\'e} and Vogt, Julia E.},
-  booktitle = {International Conference on Learning Representations},
-  year      = {2024},
-  url       = {https://openreview.net/forum?id=k5THrhXDV3}
+@inproceedings{palumbo2024deep,
+  title={Deep Generative Clustering with Multimodal Diffusion Variational Autoencoders},
+  author={Emanuele Palumbo and Laura Manduchi and Sonia Laguna and Daphn{\'e} Chopard and Julia E Vogt},
+  booktitle={The Twelfth International Conference on Learning Representations},
+  year={2024},
+  url={https://openreview.net/forum?id=k5THrhXDV3}
 }
 ```
 
