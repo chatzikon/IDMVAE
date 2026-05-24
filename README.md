@@ -92,13 +92,14 @@ Please cite the **original dataset publications** when you use these benchmarks 
 | **CUBcluster8 (256px)** | Image + caption pairs, 8-species cluster split (`dataset_CUBcluster8.py`) | Built on [Caltech CUB-200-2011](https://www.vision.caltech.edu/datasets/cub_200_2011/); cluster grouping follows the **CUBICC** line of work in [CMVAE](https://github.com/epalu/CMVAE#cubicc) (256×256 preprocessed tensors: `images.pt`, `captions.pt`, `labels_cluster.pt`, …) |
 | **TCGA** | Two complete omics views in `.npz` splits (`dataset_TCGA_2_complete_views.py`) | [The Cancer Genome Atlas (TCGA)](https://www.cancer.gov/tcga) via [GDC](https://portal.gdc.cancer.gov/) |
 
+<!--
 **Image–caption pairing for CUB:** widely attributed to Reed et al. (fine-grained captioning); include that citation if your work uses the caption modality.
 
 **TCGA note:** this repository expects **preprocessed** `complete_views_split{k}_{tr,val,te}.npz` files (two views per sample).
 
 **PolyMNIST:** cite **Sutter et al. (2021, MoPoE)** — that paper introduces the dataset ([arXiv:2105.02470](https://arxiv.org/abs/2105.02470)).
 
-<!--
+
 ### BibTeX (datasets)
 
 ```bibtex
