@@ -1,7 +1,6 @@
 #!/bin/bash
-# PolyMNIST-Quadrant IDMVAE. Defaults match paper Appendix B.1 (epochs 100, batch 128, β=2.5, z=32 w=128,
-# λ1=80, λ_contrast=20 with CL, diffusion weight 1.0). Adjust POLYMNIST_ROOT if needed; then set MODE for test/resume.
-# cd "$(dirname "$0")/.." || exit 1
+# PolyMNIST-Quadrant IDMVAE. Defaults match paper Appendix B.1 (epochs 100, batch 128, beta=2.5, z=32 w=128, cross_mi_scale=80, gen_aug_scale=20, diff_lw=1.0)
+# Adjust POLYMNIST_ROOT if needed; then set MODE for test/resume.
 
 # --- mode: train | resume | test | print_params ---
 MODE="train"
@@ -10,7 +9,7 @@ test_time_dataset_state="eval" # eval or test
 
 EXPERIMENT="PolyMNIST_IDMVAE_release"
 OUTPUTDIR="../outputs"
-POLYMNIST_ROOT="${POLYMNIST_ROOT:-/data/backed_up/shared/Data/PolyMNIST}"
+POLYMNIST_ROOT="/data/backed_up/shared/Data/PolyMNIST"
 POLYMNIST_TSNE_ROOT="${POLYMNIST_TSNE_ROOT:-../outputs/t_SNE}"
 
 root="${POLYMNIST_ROOT}"
