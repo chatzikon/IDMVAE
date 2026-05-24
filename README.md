@@ -85,7 +85,7 @@ export DATADIR=/path/to/TCGA/complete_splits
 
 `DATADIR` for TCGA must contain `complete_views_split{k}_tr.npz`, `complete_views_split{k}_val.npz`, and `complete_views_split{k}_te.npz` for each split index `k` the script runs (default `k` in `0..4`).
 
-Use each training script’s `DATADIR` / `--datadir` (or documented overrides) for the **exact** split directory used in your run.
+Use each training script’s `DATADIR` / `--datadir` for the exact split directory used in your run.
 
 ## References
 
@@ -148,7 +148,7 @@ Working directory: **`src/`** (repository root is the parent of `src/`).
 
 | Dataset | Command script (from `src/`) |
 |---------|------------------------------|
-| PolyMNIST | `python` / shell: `commands/run_PolyMNIST_experiment_train_and_checkpoint.sh` |
+| PolyMNIST | `commands/run_PolyMNIST_experiment_train_and_checkpoint.sh` |
 | CUB 256px | `commands/run_CUB_experiment_train_and_checkpoint_256.sh` |
 | TCGA | `commands/run_TCGA_experiment.sh` |
 
