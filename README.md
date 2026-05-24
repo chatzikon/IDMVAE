@@ -43,12 +43,14 @@ pip install -r requirements.txt
 
 ## Datasets
 
-This repo ships **dataloaders and preparation scripts** only (no raw dataset archives in Git). Point them at data on disk using the environment variables below.
+This repo ships dataloaders and preparation scripts. Pre-processed training data can be downloaded <a href="https://iowa-my.sharepoint.com/:f:/g/personal/wwang157_uiowa_edu/IgCBk365vyJPQ55IlXTG0E3eAVobHl9UbX3AgLh25ZASjI4?e=IcY4zc">here</a>. Point them at data on disk using the environment variables below.
 
+<!--
 | Source | What you get |
 |--------|----------------|
 | [Dataset references](#dataset-references) | Official download links and BibTeX for each benchmark |
 | [ICLR2026_IDMVAE (SharePoint)](https://iowa-my.sharepoint.com/:f:/g/personal/wwang157_uiowa_edu/IgCBk365vyJPQ55IlXTG0E3eAVobHl9UbX3AgLh25ZASjI4?e=IcY4zc) | Preprocessed splits, checkpoints, and preparation notes |
+-->
 
 **Loaders** (`dataset_PolyMNIST_quadrant.py`, `dataset_CUBcluster8.py`, `dataset_TCGA_2_complete_views.py`, …) and helper scripts.
 
