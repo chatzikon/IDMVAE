@@ -6,10 +6,7 @@ Official PyTorch implementation of **IDMVAE** (Information-Disentangled Multimod
 
 - Training and evaluation code for IDMVAE on PolyMNIST, CUB-200-2011 (CUBcluster8 at 256px), and TCGA (two complete views).
 - Shell launchers under `src/commands/` for the main experiment workflows.
-- `figures/` for assets used in the paper and repository.
 - **`src/baseline/`** — third-party and legacy baseline code kept for reference. And a cleaned baseline bundle may be published later.
-
-Local run directories such as `outputs/` and `src/wandb/` are git-ignored; they are not part of the release tree.
 
 <!--
 ## Requirements
