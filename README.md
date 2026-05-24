@@ -43,7 +43,7 @@ pip install -r requirements.txt
 
 ## Datasets
 
-This repo ships dataloaders and preparation scripts. Pre-processed training data can be downloaded <a href="https://iowa-my.sharepoint.com/:f:/g/personal/wwang157_uiowa_edu/IgCBk365vyJPQ55IlXTG0E3eAVobHl9UbX3AgLh25ZASjI4?e=IcY4zc">here</a>. Point them at data on disk using the environment variables below.
+This repo ships dataloaders and preparation scripts. Processed data can be downloaded <a href="https://iowa-my.sharepoint.com/:f:/g/personal/wwang157_uiowa_edu/IgCBk365vyJPQ55IlXTG0E3eAVobHl9UbX3AgLh25ZASjI4?e=IcY4zc">here</a>. Point them at data on disk using the environment variables below.
 
 <!--
 | Source | What you get |
@@ -64,13 +64,13 @@ This repo ships dataloaders and preparation scripts. Pre-processed training data
 
 Read the comments at the top of each script for `OUT_ROOT` / `SRC_ROOT` and other env overrides. 
 **TCGA** expects pre-built `.npz` tensors per split (see below); preparation of those arrays is outside the snippets above—use your own pipeline to match `train_IDMVAE_TCGA.py`.
--->
 
 | Dataset | Notes |
 |---------|--------|
 | PolyMNIST | Quadrant pipeline (`PolyMNISTDataset_pt` in `dataset_PolyMNIST_quadrant.py`) |
 | CUB | **256px** CUBcluster8 split used in this repo (see dataloader + experiment scripts for directory layout) |
 | TCGA | Two complete views; `complete_views_split{k}_{tr,val,te}.npz` under `DATADIR` |
+-->
 
 Typical environment variables (defaults in some shell scripts are cluster placeholders—**override** for your machine):
 
@@ -84,8 +84,6 @@ export DATADIR=/path/to/TCGA/complete_splits
 ```
 
 `DATADIR` for TCGA must contain `complete_views_split{k}_tr.npz`, `complete_views_split{k}_val.npz`, and `complete_views_split{k}_te.npz` for each split index `k` the script runs (default `k` in `0..4`).
-
-Use each training script’s `DATADIR` / `--datadir` for the exact split directory used in your run.
 
 ## References
 
