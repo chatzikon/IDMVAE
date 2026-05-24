@@ -9,13 +9,14 @@ Official PyTorch implementation of **IDMVAE** (Information-Disentangled Multimod
 
 ## What this repository contains
 
-- Training and evaluation code for IDMVAE on PolyMNIST, CUB-200-2011 (CUBcluster8 at 256px), CelebAMask-HQ, and TCGA (two complete views).
+- Training and evaluation code for IDMVAE on PolyMNIST, CUB-200-2011 (CUBcluster8 at 256px), and TCGA (two complete views).
 - Shell launchers under `src/commands/` for the main experiment workflows.
 - `figures/` for assets used in the paper and repository.
 - **`src/baseline/`** — third-party and legacy baseline code kept for reference. And a cleaned baseline bundle may be published later.
 
 Local run directories such as `outputs/` and `src/wandb/` are git-ignored; they are not part of the release tree.
 
+<!--
 ## Requirements
 
 - **`requirements.txt`** is a **fully pinned** dependency lock (including transitive packages). It was produced with [`pip-tools`](https://pip-tools.readthedocs.io/) from **`requirements.in`** on **Python 3.12**, using PyTorch **2.5.1** with **CUDA 12** wheels from PyPI (`nvidia-*` packages in the lockfile).
@@ -28,6 +29,8 @@ Local run directories such as `outputs/` and `src/wandb/` are git-ignored; they 
 cd /path/to/this/repo
 pip install -r requirements.txt
 ```
+-->
+
 
 ## Data layout
 
@@ -38,15 +41,15 @@ This repo ships **dataloaders and preparation scripts** only (no raw dataset arc
 | [Dataset references](#dataset-references) | Official download links and BibTeX for each benchmark |
 | [ICLR2026_IDMVAE (SharePoint)](https://iowa-my.sharepoint.com/:f:/r/personal/wwang157_uiowa_edu/Documents/ICLR2026_IDMVAE?csf=1&web=1&e=Y1iD0G) | Preprocessed splits, checkpoints, and preparation notes |
 
-**Loaders** (`dataset_PolyMNIST_quadrant.py`, `dataset_CUBcluster8.py`, `dataset_CelebAMask_HQ.py`, `dataset_TCGA_2_complete_views.py`, …) and **helper scripts**:
+**Loaders** (`dataset_PolyMNIST_quadrant.py`, `dataset_CUBcluster8.py`, `dataset_TCGA_2_complete_views.py`, …) and **helper scripts**:
 
 | Role | Location |
 |------|----------|
 | PolyMNIST quadrant generation | `src/commands/functions_helper/gen_polyMNIST_quadrant.sh` |
 | PolyMNIST PNG → PT conversion | `src/commands/functions_helper/convert_polymnist_to_pt.sh` |
 | PolyMNIST digit classifier pretraining | `src/commands/functions_helper/pretrain_classifier_polyMNIST.sh` |
-| CelebAMask-HQ → PT conversion | `src/commands/functions_helper/convert_celebamask_hq_to_pt.sh` |
-| Latent pre-generation (32×32 ×4, for diffusion / denoisers) | `src/commands/functions_post_eval/pregen_4x32x32_dataset_CUB256.sh`, `pregen_4x32x32_dataset_CelebAMask_HQ.sh` |
+<!-- | CelebAMask-HQ → PT conversion | `src/commands/functions_helper/convert_celebamask_hq_to_pt.sh` |-->
+| Latent pre-generation (32×32 ×4, for diffusion / denoisers) | `src/commands/functions_post_eval/pregen_4x32x32_dataset_CUB256.sh` |
 
 Read the comments at the top of each script for `OUT_ROOT` / `SRC_ROOT` and other env overrides. **TCGA** expects pre-built `.npz` tensors per split (see below); preparation of those arrays is outside the snippets above—use your own pipeline to match `train_IDMVAE_TCGA.py`.
 
@@ -54,7 +57,7 @@ Read the comments at the top of each script for `OUT_ROOT` / `SRC_ROOT` and othe
 |---------|--------|
 | PolyMNIST | Quadrant pipeline (`PolyMNISTDataset_pt` in `dataset_PolyMNIST_quadrant.py`) |
 | CUB | **256px** CUBcluster8 split used in this repo (see dataloader + experiment scripts for directory layout) |
-| CelebAMask-HQ | Images + masks; dataloaders in `dataset_CelebAMask_HQ.py` |
+<!--| CelebAMask-HQ | Images + masks; dataloaders in `dataset_CelebAMask_HQ.py` |-->
 | TCGA | Two complete views; `complete_views_split{k}_{tr,val,te}.npz` under `DATADIR` |
 
 Typical environment variables (defaults in some shell scripts are cluster placeholders—**override** for your machine):
@@ -62,7 +65,7 @@ Typical environment variables (defaults in some shell scripts are cluster placeh
 ```bash
 export POLYMNIST_ROOT=/path/to/PolyMNIST
 export CUB_ROOT=/path/to/CUB
-export CELEBAMASK_ROOT=/path/to/CelebAMask-HQ_from_SBM
+<!--export CELEBAMASK_ROOT=/path/to/CelebAMask-HQ_from_SBM-->
 export DENOISER_ROOT=/path/to/pregen_4x32x32/_denoiser
 
 # TCGA (`commands/run_TCGA_experiment.sh`)
@@ -83,7 +86,7 @@ Please cite the **original dataset publications** when you use these benchmarks 
 | **PolyMNIST** | 5-view colored MNIST (quadrant layout; see `dataset_PolyMNIST_quadrant.py`) | **Dataset introduced in** [Sutter et al., *Generalized Multimodal ELBO* (MoPoE)](https://arxiv.org/abs/2105.02470); prebuilt archives also via [MMVAE+](https://github.com/epalu/mmvaeplus#download-data) / [MoPoE](https://github.com/thomassutter/MoPoE) |
 | **CUB-200-2011** | Bird images + attributes (base corpus) | [Caltech CUB-200-2011](https://www.vision.caltech.edu/datasets/cub_200_2011/) |
 | **CUBcluster8 (256px)** | Image + caption pairs, 8-species cluster split (`dataset_CUBcluster8.py`) | Built on CUB-200-2011; cluster grouping follows the **CUBICC** line of work in [CMVAE](https://github.com/epalu/CMVAE#cubicc) (256×256 preprocessed tensors: `images.pt`, `captions.pt`, `labels_cluster.pt`, …) |
-| **CelebAMask-HQ** | Face images + parsing masks (`dataset_CelebAMask_HQ.py`) | [CelebAMask-HQ (GitHub)](https://github.com/switchablenorms/CelebAMask-HQ) |
+<!--| **CelebAMask-HQ** | Face images + parsing masks (`dataset_CelebAMask_HQ.py`) | [CelebAMask-HQ (GitHub)](https://github.com/switchablenorms/CelebAMask-HQ) |-->
 | **TCGA** | Two complete omics views in `.npz` splits (`dataset_TCGA_2_complete_views.py`) | [The Cancer Genome Atlas (TCGA)](https://www.cancer.gov/tcga) via [GDC](https://portal.gdc.cancer.gov/) |
 
 **Image–caption pairing for CUB:** widely attributed to Reed et al. (fine-grained captioning); include that citation if your work uses the caption modality.
@@ -165,7 +168,7 @@ Working directory: **`src/`** (repository root is the parent of `src/`).
 |---------|------------------------------|
 | PolyMNIST | `python` / shell: `commands/run_PolyMNIST_experiment_train_and_checkpoint.sh` |
 | CUB 256px | `commands/run_CUB_experiment_train_and_checkpoint_256.sh` |
-| CelebAMask-HQ | `commands/run_CelebAMask_experiment_train_and_checkpoint.sh` |
+<!--| CelebAMask-HQ | `commands/run_CelebAMask_experiment_train_and_checkpoint.sh` |-->
 | TCGA | `commands/run_TCGA_experiment.sh` |
 
 Before running: set `MODE` (`train` / `resume` / `test`, etc.), dataset roots, checkpoint locations, and GPU ids inside the chosen script.
