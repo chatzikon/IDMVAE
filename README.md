@@ -54,13 +54,14 @@ This repo ships dataloaders and preparation scripts. Processed data can be downl
 
 **Loaders** (`dataset_PolyMNIST_quadrant.py`, `dataset_CUBcluster8.py`, `dataset_TCGA_2_complete_views.py`, …) and helper scripts.
 
-<!--
 | Role | Location |
 |------|----------|
 | PolyMNIST quadrant generation | `src/commands/functions_helper/gen_polyMNIST_quadrant.sh` |
 | PolyMNIST PNG → PT conversion | `src/commands/functions_helper/convert_polymnist_to_pt.sh` |
 | PolyMNIST digit classifier pretraining | `src/commands/functions_helper/pretrain_classifier_polyMNIST.sh` |
 | Latent pre-generation (32×32 ×4, for diffusion / denoisers) | `src/commands/functions_post_eval/pregen_4x32x32_dataset_CUB256.sh` |
+
+<!--
 
 Read the comments at the top of each script for `OUT_ROOT` / `SRC_ROOT` and other env overrides. 
 **TCGA** expects pre-built `.npz` tensors per split (see below); preparation of those arrays is outside the snippets above—use your own pipeline to match `train_IDMVAE_TCGA.py`.
@@ -70,7 +71,6 @@ Read the comments at the top of each script for `OUT_ROOT` / `SRC_ROOT` and othe
 | PolyMNIST | Quadrant pipeline (`PolyMNISTDataset_pt` in `dataset_PolyMNIST_quadrant.py`) |
 | CUB | **256px** CUBcluster8 split used in this repo (see dataloader + experiment scripts for directory layout) |
 | TCGA | Two complete views; `complete_views_split{k}_{tr,val,te}.npz` under `DATADIR` |
--->
 
 Typical environment variables (defaults in some shell scripts are cluster placeholders—**override** for your machine):
 
@@ -84,8 +84,9 @@ export DATADIR=/path/to/TCGA/complete_splits
 ```
 
 `DATADIR` for TCGA must contain `complete_views_split{k}_tr.npz`, `complete_views_split{k}_val.npz`, and `complete_views_split{k}_te.npz` for each split index `k` the script runs (default `k` in `0..4`).
+-->
 
-## References
+### References
 
 Please cite the **original dataset publications** when you use these benchmarks.
 
