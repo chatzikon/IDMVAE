@@ -143,7 +143,7 @@ Please cite the original dataset publications when you use these benchmarks.
 
 ## Running experiments
 
-Working directory: **`src/`** (repository root is the parent of `src/`).
+Working directory: **`src/`**
 
 | Dataset | Command script (from `src/`) |
 |---------|------------------------------|
