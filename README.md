@@ -1,11 +1,6 @@
 # IDMVAE — Disentanglement of Variations with Multimodal Generative Modeling
 
-Official PyTorch implementation of **IDMVAE** (Information-Disentangled Multimodal VAE) from the ICLR 2026 paper *Disentanglement of Variations with Multimodal Generative Modeling*.
-
-| Resource | Link |
-|----------|------|
-| OpenReview (paper + BibTeX) | [ICLR 2026 forum page](https://openreview.net/forum?id=DcHGEcqdFf) |
-| Supplementary materials & preprocessed assets | [ICLR2026_IDMVAE (SharePoint)](https://iowa-my.sharepoint.com/:f:/r/personal/wwang157_uiowa_edu/Documents/ICLR2026_IDMVAE?csf=1&web=1&e=Y1iD0G) |
+Official PyTorch implementation of **IDMVAE** (Information-Disentangled Multimodal VAE) from the ICLR 2026 paper <a href="https://openreview.net/forum?id=DcHGEcqdFf">*Disentanglement of Variations with Multimodal Generative Modeling*</a>.
 
 ## What this repository contains
 
@@ -39,7 +34,7 @@ This repo ships **dataloaders and preparation scripts** only (no raw dataset arc
 | Source | What you get |
 |--------|----------------|
 | [Dataset references](#dataset-references) | Official download links and BibTeX for each benchmark |
-| [ICLR2026_IDMVAE (SharePoint)](https://iowa-my.sharepoint.com/:f:/r/personal/wwang157_uiowa_edu/Documents/ICLR2026_IDMVAE?csf=1&web=1&e=Y1iD0G) | Preprocessed splits, checkpoints, and preparation notes |
+| [ICLR2026_IDMVAE (SharePoint)](https://iowa-my.sharepoint.com/:f:/g/personal/wwang157_uiowa_edu/IgCBk365vyJPQ55IlXTG0E3eAVobHl9UbX3AgLh25ZASjI4?e=IcY4zc) | Preprocessed splits, checkpoints, and preparation notes |
 
 **Loaders** (`dataset_PolyMNIST_quadrant.py`, `dataset_CUBcluster8.py`, `dataset_TCGA_2_complete_views.py`, …) and **helper scripts**:
 
@@ -65,7 +60,6 @@ Typical environment variables (defaults in some shell scripts are cluster placeh
 ```bash
 export POLYMNIST_ROOT=/path/to/PolyMNIST
 export CUB_ROOT=/path/to/CUB
-<!--export CELEBAMASK_ROOT=/path/to/CelebAMask-HQ_from_SBM-->
 export DENOISER_ROOT=/path/to/pregen_4x32x32/_denoiser
 
 # TCGA (`commands/run_TCGA_experiment.sh`)
@@ -139,24 +133,6 @@ Please cite the **original dataset publications** when you use these benchmarks 
   booktitle = {International Conference on Learning Representations},
   year      = {2024},
   url       = {https://openreview.net/forum?id=k5THrhXDV3}
-}
-
-@inproceedings{lee2020maskgan,
-  title     = {Mask{GAN}: Towards Diverse and Interactive Facial Image Manipulation},
-  author    = {Lee, Cheng-Han and Liu, Ziwei and Wu, Lingyun and Luo, Ping},
-  booktitle = {IEEE Conference on Computer Vision and Pattern Recognition},
-  year      = {2020}
-}
-
-@article{weinstein2013tcga,
-  title   = {The Cancer Genome Atlas Pan-Cancer Analysis Project},
-  author  = {Weinstein, John N. and Collisson, Eric A. and Mills, Gordon B. and others},
-  journal = {Nature Genetics},
-  volume  = {45},
-  number  = {10},
-  pages   = {1113--1120},
-  year    = {2013},
-  doi     = {10.1038/ng.2764}
 }
 ```
 
