@@ -43,7 +43,7 @@ pip install -r requirements.txt
 
 ## Datasets
 
-This repo ships dataloaders and preparation scripts. Processed data can be downloaded <a href="https://iowa-my.sharepoint.com/:f:/g/personal/wwang157_uiowa_edu/IgCBk365vyJPQ55IlXTG0E3eAVobHl9UbX3AgLh25ZASjI4?e=IcY4zc">here</a>. Point them at data on disk using the environment variables below.
+This repo ships dataloaders and preparation scripts. Processed data can be downloaded <a href="https://iowa-my.sharepoint.com/:f:/g/personal/wwang157_uiowa_edu/IgCBk365vyJPQ55IlXTG0E3eAVobHl9UbX3AgLh25ZASjI4?e=IcY4zc">here</a>. 
 
 <!--
 | Source | What you get |
