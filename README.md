@@ -2,11 +2,22 @@
 
 Official PyTorch implementation of **IDMVAE** (Information-Disentangled Multimodal VAE) from the ICLR 2026 paper <a href="https://openreview.net/forum?id=DcHGEcqdFf">*Disentanglement of Variations with Multimodal Generative Modeling*</a>.
 
+
+```bibtex
+@inproceedings{zhang2026disentanglement,
+  title={Disentanglement of Variations with Multimodal Generative Modeling},
+  author={Yijie Zhang and Yiyang Shen and Weiran Wang},
+  booktitle={The Fourteenth International Conference on Learning Representations},
+  year={2026},
+  url={https://openreview.net/forum?id=DcHGEcqdFf}
+}
+```
+
 ## What this repository contains
 
 - Training and evaluation code for IDMVAE on PolyMNIST, CUB-200-2011 (CUBcluster8 at 256px), and TCGA (two complete views).
 - Shell launchers under `src/commands/` for the main experiment workflows.
-- **`src/baseline/`** — third-party and legacy baseline code kept for reference. And a cleaned baseline bundle may be published later.
+- `src/baseline/` — third-party and legacy baseline code kept for reference. And a cleaned baseline bundle may be published later.
 
 <!--
 ## Requirements
@@ -30,7 +41,7 @@ pip install -r requirements.txt
 
 
 
-## Data layout
+## Datasets
 
 This repo ships **dataloaders and preparation scripts** only (no raw dataset archives in Git). Point them at data on disk using the environment variables below.
 
