@@ -77,7 +77,6 @@ Please cite the **original dataset publications** when you use these benchmarks 
 
 | Dataset | Role in this repo | Official source |
 |---------|-------------------|-----------------|
-| **MNIST** | Base digits for building PolyMNIST | **Citation:** [LeCun MNIST page](http://yann.lecun.com/exdb/mnist/) (directory often empty). **Downloads:** `torchvision.datasets.MNIST` or [CVDF MNIST mirror](https://github.com/cvdfoundation/mnist) |
 | **PolyMNIST** | 5-view colored MNIST (quadrant layout; see `dataset_PolyMNIST_quadrant.py`) | **Dataset introduced in** [Sutter et al., *Generalized Multimodal ELBO* (MoPoE)](https://arxiv.org/abs/2105.02470); prebuilt archives also via [MMVAE+](https://github.com/epalu/mmvaeplus#download-data) / [MoPoE](https://github.com/thomassutter/MoPoE) |
 | **CUB-200-2011** | Bird images + attributes (base corpus) | [Caltech CUB-200-2011](https://www.vision.caltech.edu/datasets/cub_200_2011/) |
 | **CUBcluster8 (256px)** | Image + caption pairs, 8-species cluster split (`dataset_CUBcluster8.py`) | Built on CUB-200-2011; cluster grouping follows the **CUBICC** line of work in [CMVAE](https://github.com/epalu/CMVAE#cubicc) (256×256 preprocessed tensors: `images.pt`, `captions.pt`, `labels_cluster.pt`, …) |
@@ -92,14 +91,6 @@ Please cite the **original dataset publications** when you use these benchmarks 
 ### BibTeX (datasets)
 
 ```bibtex
-@article{lecun2010mnist,
-  title   = {{MNIST} Handwritten Digit Database},
-  author  = {LeCun, Yann and Cortes, Corinna and Burges, Christopher J. C.},
-  journal = {ATT Labs},
-  year    = {2010},
-  note    = {Historic host http://yann.lecun.com/exdb/mnist/ ; use torchvision or https://github.com/cvdfoundation/mnist for files}
-}
-
 @article{sutter2021mopoe,
   title   = {Generalized Multimodal {ELBO}},
   author  = {Sutter, Thomas M. and Daunhawer, Imant and Vogt, Julia E.},
