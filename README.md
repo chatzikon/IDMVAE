@@ -2,7 +2,7 @@
 
 Official PyTorch implementation of **IDMVAE** (Information-Disentangled Multimodal VAE) from the ICLR 2026 paper <a href="https://openreview.net/forum?id=DcHGEcqdFf">*Disentanglement of Variations with Multimodal Generative Modeling*</a>.
 
-
+<!--
 ```bibtex
 @inproceedings{zhang2026disentanglement,
   title={Disentanglement of Variations with Multimodal Generative Modeling},
@@ -12,6 +12,7 @@ Official PyTorch implementation of **IDMVAE** (Information-Disentangled Multimod
   url={https://openreview.net/forum?id=DcHGEcqdFf}
 }
 ```
+-->
 
 ## What this repository contains
 
