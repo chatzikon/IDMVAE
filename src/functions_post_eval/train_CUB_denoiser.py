@@ -171,7 +171,6 @@ def main(args):
             _, _, x, noisy_x = data
             x = x.to(device)
             noisy_x = noisy_x.to(device)
-            # import pdb;pdb.set_trace()
 
             t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device)
             y = model.num_classes * torch.ones(x.shape[0], dtype=torch.int32, device=x.device)
