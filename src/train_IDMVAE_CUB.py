@@ -1,6 +1,9 @@
 # Train IDMVAE on CUB Image-Captions dataset
 import os
-# Deterministic behavior: 
+
+from numba.cuda import shared
+
+# Deterministic behavior:
 # https://pytorch.org/docs/stable/notes/randomness.html
 # https://docs.nvidia.com/cuda/cublas/index.html#cublasApi_reproducibility
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # Set before importing torch
@@ -422,6 +425,39 @@ if args.dataset == 'CUBcluster8' or args.dataset == 'CUBcluster8_256':
         assert args.img_size == 64
         assert args.img_channels == 3
 
+    vae = None
+
+
+
+    if use_pretrain_feats:
+        assert torch.cuda.is_available()
+        device = torch.device("cuda")
+        sd_vae_ft = args.vae if hasattr(args, "vae") else "mse"
+
+        vae = AutoencoderKL.from_pretrained(
+            f"stabilityai/sd-vae-ft-{sd_vae_ft}"
+        ).to(device)
+
+        vae.eval()
+        for p in vae.parameters():
+            p.requires_grad = False
+
+    thres_deg_int = int(args.degree_away_center_threshold) if args else 0
+
+    # load image and grouping data
+    shared_data = {
+    'images': torch.load(os.path.join(base_dir, 'images.pt'), weights_only=False, map_location="cpu"),
+    'captions': torch.load(os.path.join(base_dir, 'captions.pt'), weights_only=False, map_location="cpu"),
+    'labels_cluster': torch.load(os.path.join(base_dir, 'labels_cluster.pt'), weights_only=False, map_location="cpu"),
+    'labels_category': torch.load(os.path.join(base_dir, 'labels_category.pt'), weights_only=False, map_location="cpu"),
+    'labels_direction': torch.load(
+        os.path.join(base_dir, 'labels_direction_deg_{}.pt'.format(thres_deg_int)), weights_only=False, map_location="cpu") \
+        if os.path.exists(os.path.join(base_dir, 'labels_direction_deg_{}.pt'.format(thres_deg_int))) else None,
+    'image_ids': torch.load(os.path.join(base_dir, 'image_ids.pt'), weights_only=False, map_location="cpu") \
+        if os.path.exists(os.path.join(base_dir, 'image_ids.pt')) else None
+    }
+
+
     # Full train set (clusters + Other)
     train_dataset = CUBcluster8Dataset(
         datadir=base_dir,
@@ -429,7 +465,8 @@ if args.dataset == 'CUBcluster8' or args.dataset == 'CUBcluster8_256':
         cluster_only=False,
         transform=augmentation_transform,  # None or augmentation_transform
         use_pretrain_feats=use_pretrain_feats,
-        args=args  # Pass args for additional configurations
+        args=args,  # Pass args for additional configurations
+        shared_data=shared_data, vae=vae, device=device
     )
     # Cluster-only train set (8 clusters without Other)
     train_cluster_dataset = CUBcluster8Dataset(
@@ -438,7 +475,8 @@ if args.dataset == 'CUBcluster8' or args.dataset == 'CUBcluster8_256':
         cluster_only=True,
         transform=None,
         use_pretrain_feats=use_pretrain_feats,
-        args=args  # Pass args for additional configurations
+        args=args,  # Pass args for additional configurations
+        shared_data=shared_data, vae=vae, device=device
     )
     # Validation set (clusters only)
     val_cluster_dataset = CUBcluster8Dataset(
@@ -446,7 +484,8 @@ if args.dataset == 'CUBcluster8' or args.dataset == 'CUBcluster8_256':
         split='val',
         transform=None,
         use_pretrain_feats=use_pretrain_feats,
-        args=args  # Pass args for additional configurations
+        args=args,  # Pass args for additional configurations
+        shared_data=shared_data, vae=vae, device=device
     )
     # Test set (clusters only)
     test_cluster_dataset = CUBcluster8Dataset(
@@ -454,7 +493,8 @@ if args.dataset == 'CUBcluster8' or args.dataset == 'CUBcluster8_256':
         split='test',
         transform=None,
         use_pretrain_feats=use_pretrain_feats,
-        args=args  # Pass args for additional configurations
+        args=args,  # Pass args for additional configurations
+        shared_data=shared_data, vae=vae, device=device
     )
 
     # Create data loaders

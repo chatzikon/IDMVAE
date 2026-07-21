@@ -123,17 +123,37 @@ class CUBcluster8Dataset(Dataset):
         cluster_only (bool): when split='train', use train_cluster_idx.npy if True
         transform (callable, optional): applied to image tensors
     """
-    def __init__(self, datadir, split='train', cluster_only=False, transform=None, use_pretrain_feats=True, args=None):
+    def __init__(self, datadir, split='train', cluster_only=False, transform=None, use_pretrain_feats=True,
+                 args=None, shared_data=None, vae=None, device=None):
         self.datadir = datadir
         self.args = args
-        self.thres_deg_int = int(args.degree_away_center_threshold) if args else 0  # Default to 0 degree if not provided
-        # load image and grouping data
-        self.images = torch.load(os.path.join(datadir, 'images.pt'))
-        self.captions = torch.load(os.path.join(datadir, 'captions.pt'))
-        self.labels_cluster = torch.load(os.path.join(datadir, 'labels_cluster.pt'))
-        self.labels_category = torch.load(os.path.join(datadir, 'labels_category.pt'))
-        self.labels_direction = torch.load(os.path.join(datadir, 'labels_direction_deg_{}.pt'.format(self.thres_deg_int))) if os.path.exists(os.path.join(datadir, 'labels_direction_deg_{}.pt'.format(self.thres_deg_int))) else None
-        self.image_ids = torch.load(os.path.join(datadir, 'image_ids.pt')) if os.path.exists(os.path.join(datadir, 'image_ids.pt')) else None
+        self.use_pretrain_feats = use_pretrain_feats
+        self.thres_deg_int = int(args.degree_away_center_threshold) if args else 0
+
+
+
+
+        if shared_data is not None:
+            self.images = shared_data["images"]
+            self.captions = shared_data["captions"]
+            self.labels_cluster = shared_data["labels_cluster"]
+            self.labels_category = shared_data["labels_category"]
+            self.labels_direction=shared_data["labels_direction"]
+            self.image_ids= shared_data["image_ids"]
+        else:
+            self.images = torch.load(os.path.join(datadir, 'images.pt'), map_location="cpu")
+            self.captions = torch.load(os.path.join(datadir, 'captions.pt'), map_location="cpu")
+            self.labels_cluster = torch.load(os.path.join(datadir, 'labels_cluster.pt'), map_location="cpu")
+            self.labels_category = torch.load(os.path.join(datadir, 'labels_category.pt'), map_location="cpu")
+            self.labels_direction= torch.load(
+                os.path.join(self.datadir, 'labels_direction_deg_{}.pt'.format(self.thres_deg_int)), weights_only=False,
+                map_location="cpu") \
+                if os.path.exists(os.path.join(self.datadir, 'labels_direction_deg_{}.pt'.format(self.thres_deg_int))) else None,
+            self.image_ids= torch.load(os.path.join(self.datadir, 'image_ids.pt'), weights_only=False, map_location="cpu") \
+                if os.path.exists(os.path.join(self.datadir, 'image_ids.pt')) else None
+
+
+
         # load vocab (same JSON as CUBSentences / eval text rendering)
         vocab = load_cub_caption_vocab(datadir)
         self.w2i = vocab['w2i']
@@ -173,15 +193,12 @@ class CUBcluster8Dataset(Dataset):
         """
         self.use_pretrain_feats = use_pretrain_feats
         if use_pretrain_feats:
-            assert torch.cuda.is_available()
-            self.device = torch.device("cuda")
-            sd_vae_ft=args.vae if args and hasattr(args, 'vae') else 'mse'
-            self.vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{sd_vae_ft}").to(self.device) # ema or mse (default)
-            # Freeze the parameters of frozen_module
-            for param in self.vae.parameters():
-                param.requires_grad = False
+            self.device = device or torch.device("cuda")
+            self.vae = vae
+            assert self.vae is not None
         else:
             self.device = torch.device("cpu")
+            self.vae = None
 
     def __len__(self):
         return len(self.pairs)

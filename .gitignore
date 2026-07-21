@@ -211,5 +211,6 @@ exp_vcca/noisy_mnist_epoch10_bs128_dropout=0.0_dim-shared=30_dim-priviate0=10_di
 src/baseline/**/*.out
 
 CUB_HQ.zip
+images.pt
 CUB_HQ/
 checkpoints/

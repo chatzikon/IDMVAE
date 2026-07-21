@@ -9,14 +9,14 @@
 MODE="train"  # train, resume, test, develop, print_params — set train when not evaluating a checkpoint
 test_time_dataset_state="eval"  # eval, test
 
-CUB_ROOT="/data/backed_up/shared/Data/CUB"
+CUB_ROOT="/home/chatziko/PycharmProjects/PythonProject/IDMVAE/CUB_HQ"
 DENOISER_ROOT="/data/backed_up/shared/Data/CUB/weiran_dit_denoisers"
 CUB_TSNE_ROOT="${CUB_TSNE_ROOT:-../outputs/t_SNE}"
 
 DATASET="CUBcluster8_256"
-marker=""
-DATADIR="${CUB_ROOT}/CUBcluster8_256/cats22_256px_70_15_15_nonbbox"
-EXPERIMENT="CUBcluster8_256_IDMVAE_release${marker}"
+marker="$(date +"%H_%M_%S")"
+DATADIR="${CUB_ROOT}/"
+EXPERIMENT="CUBcluster8_256_IDMVAE_release_${marker}"
 CPt_OUTPUTDIR="${EXPERIMENT}"
 
 OUTPUTDIR="../outputs"
@@ -134,8 +134,8 @@ case "$MODE" in
 esac
 
 date=$(date '+%m-%d')
-number=1
-gpuid=3
+number=0
+gpuid=0
 note="_lt${GEN_AUG_TYPE}_TD${test_time_dataset_state}_lw${diff_lw}"
 RUN_NOTE="${RUN_NOTE_PREFIX}${date}_${number}_gpu${gpuid}${note}"
 tSNE_save_dir="${CUB_TSNE_ROOT}/${EXPERIMENT}/${date}_${number}_${note}"
