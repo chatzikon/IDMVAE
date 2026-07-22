@@ -139,7 +139,8 @@ class CUBcluster8Dataset(Dataset):
             self.labels_cluster = shared_data["labels_cluster"]
             self.labels_category = shared_data["labels_category"]
             self.labels_direction=shared_data["labels_direction"]
-            self.image_ids= shared_data["image_ids"]
+            #self.image_ids= shared_data["image_ids"]
+            self.image_ids = None
         else:
             self.images = torch.load(os.path.join(datadir, 'images.pt'), map_location="cpu")
             self.captions = torch.load(os.path.join(datadir, 'captions.pt'), map_location="cpu")
@@ -148,9 +149,15 @@ class CUBcluster8Dataset(Dataset):
             self.labels_direction= torch.load(
                 os.path.join(self.datadir, 'labels_direction_deg_{}.pt'.format(self.thres_deg_int)), weights_only=False,
                 map_location="cpu") \
-                if os.path.exists(os.path.join(self.datadir, 'labels_direction_deg_{}.pt'.format(self.thres_deg_int))) else None,
-            self.image_ids= torch.load(os.path.join(self.datadir, 'image_ids.pt'), weights_only=False, map_location="cpu") \
-                if os.path.exists(os.path.join(self.datadir, 'image_ids.pt')) else None
+                if os.path.exists(os.path.join(self.datadir, 'labels_direction_deg_{}.pt'.format(self.thres_deg_int))) else None
+
+            # self.image_ids = (
+            #     torch.load(os.path.join(datadir, "image_ids.pt"))
+            #     if os.path.exists(os.path.join(datadir, "image_ids.pt"))
+            #     else None
+            # )
+            self.image_ids = None
+
 
 
 
@@ -240,9 +247,22 @@ class CUBcluster8Dataset(Dataset):
         cap_tensor = F.one_hot(idx_tensor, num_classes=self.vocab_size).float()
         # labels
         lbl_cluster = int(self.labels_cluster[img_idx])
-        lbl_dir = int(self.labels_direction[img_idx]) if self.labels_direction is not None else None
+
+        lbl_dir = (
+            int(self.labels_direction[img_idx])
+            if self.labels_direction is not None
+            else -1
+        )
+
         lbl_cat = int(self.labels_category[img_idx])
-        img_id = self.image_ids[img_idx] if self.image_ids is not None else None
+
+        img_id = (
+            self.image_ids[img_idx]
+            if self.image_ids is not None and img_idx < len(self.image_ids)
+            else -1
+        )
+
+
         dataset_index = img_idx  # This is the index of the image in the original dataset
         subset_index = idx  # This is the index in the subset of pairs (img_idx, cap_idx)
 
@@ -477,7 +497,7 @@ def parse_cub_pregen_args() -> argparse.Namespace:
     parser.add_argument("--outputs-name-10x", default="outputs_4x32x32_10x.pt", help="Filename for 10x IDMVAE reconstructions")
     parser.add_argument("--samples-per-image", type=int, default=10, help="How many latent samples to draw per image")
     parser.add_argument("--batch-size", type=int, default=128, help="Batch size for encoding/decoding")
-    parser.add_argument("--num-workers", type=int, default=32, help="Number of DataLoader workers")
+    parser.add_argument("--num-workers", type=int, default=0, help="Number of DataLoader workers")
     parser.add_argument("--device", default=None, help="PyTorch device (e.g. cuda, cuda:1, cpu). Defaults to CUDA when available.")
     parser.add_argument("--max-samples", type=int, default=None, help="Optional limit for debugging")
     parser.add_argument("--sd-vae", choices=["ema", "mse"], default=None, help="Override Stable Diffusion VAE variant if desired")

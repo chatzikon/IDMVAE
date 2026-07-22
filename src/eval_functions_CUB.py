@@ -104,9 +104,9 @@ def train_clf_lr_CUB_multi_labelTypes(model, dl, device, args, condition_type=No
         latent_rep_u = np.concatenate(latent_rep[f"m{v}"]["us"], axis=0)
         latent_rep_w = np.concatenate(latent_rep[f"m{v}"]["ws"], axis=0)
         latent_rep_z = np.concatenate(latent_rep[f"m{v}"]["zs"], axis=0)
-        clf_lr_rep_u = LogisticRegression(random_state=0, solver="lbfgs", multi_class="auto", max_iter=1000)
-        clf_lr_rep_z = LogisticRegression(random_state=0, solver="lbfgs", multi_class="auto", max_iter=1000)
-        clf_lr_rep_w = LogisticRegression(random_state=0, solver="lbfgs", multi_class="auto", max_iter=1000)
+        clf_lr_rep_u = LogisticRegression(random_state=0, solver="lbfgs", max_iter=1000)
+        clf_lr_rep_z = LogisticRegression(random_state=0, solver="lbfgs", max_iter=1000)
+        clf_lr_rep_w = LogisticRegression(random_state=0, solver="lbfgs", max_iter=1000)
         clf_lr_rep_u.fit(latent_rep_u, gt.ravel()); clf_lr[f"m{v}_u"] = clf_lr_rep_u
         clf_lr_rep_w.fit(latent_rep_w, gt.ravel()); clf_lr[f"m{v}_w"] = clf_lr_rep_w
         clf_lr_rep_z.fit(latent_rep_z, gt.ravel()); clf_lr[f"m{v}_z"] = clf_lr_rep_z

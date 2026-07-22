@@ -120,7 +120,8 @@ def main(args):
 
     if args.pretrain_ckpt:
         ckpt_path = args.pretrain_ckpt
-        state_dict = torch.load(ckpt_path, map_location=lambda storage, loc: storage)
+        #state_dict = torch.load(ckpt_path, map_location=lambda storage, loc: storage)
+        state_dict = torch.load(ckpt_path, map_location="cpu")
         model.load_state_dict(state_dict, strict=False)
 
     model = model.to(device)
@@ -132,7 +133,12 @@ def main(args):
     print(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
     # Reduced learning rate for finetuning.
-    opt = torch.optim.AdamW(model.parameters(), lr=1e-5, weight_decay=0)
+    opt = torch.optim.AdamW(model.parameters(), lr=1e-5, weight_decay=0, foreach=False)
+
+    scaler = torch.amp.GradScaler(
+        "cuda",
+        enabled=True,
+    )
 
     # Full train set
     dataset = CUBcluster8_pregen_4x32x32_10x(
@@ -175,11 +181,33 @@ def main(args):
             t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device)
             y = model.num_classes * torch.ones(x.shape[0], dtype=torch.int32, device=x.device)
             model_kwargs = dict(y=y, noisy_x=noisy_x)
-            loss_dict = diffusion.training_losses(model, x, t, model_kwargs)
-            loss = loss_dict["loss"].mean()
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
+
+
+            #loss_dict = diffusion.training_losses(model, x, t, model_kwargs)
+            #loss = loss_dict["loss"].mean()
+            # opt.zero_grad()
+            # loss.backward()
+            # opt.step()
+
+            opt.zero_grad(set_to_none=True)
+
+            with torch.autocast(
+                    device_type="cuda",
+                    dtype=torch.float16,
+            ):
+                loss_dict = diffusion.training_losses(
+                    model,
+                    x,
+                    t,
+                    model_kwargs,
+                )
+                loss = loss_dict["loss"].mean()
+
+            scaler.scale(loss).backward()
+            scaler.step(opt)
+            scaler.update()
+
+
             update_ema(ema, model)
 
             # Log loss values:
@@ -207,6 +235,7 @@ def main(args):
                     "model": model.state_dict(),
                     "ema": ema.state_dict(),
                     "opt": opt.state_dict(),
+                    "scaler": scaler.state_dict(),
                     "args": args
                 }
                 checkpoint_path = f"{checkpoint_dir}/{train_steps:07d}.pt"
@@ -235,7 +264,7 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=1400)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--global-seed", type=int, default=0)
-    parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--ckpt-every", type=int, default=50_000)
     parser.add_argument("--pretrain-ckpt", type=str, default="")

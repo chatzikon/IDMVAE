@@ -9,17 +9,17 @@
 set -euo pipefail
 
 # --- Defaults (release pregen ep7) ---
-DATA_PATH="${DATA_PATH:-/data/backed_up/shared/Data/CUB/CUBcluster8_256/cats22_256px_70_15_15_nonbbox/pregen_4x32x32_10x/IDMVAE_04-20_0_ep7_release}"
-HIGH_RES_DATA_PATH="${HIGH_RES_DATA_PATH:-/data/backed_up/shared/Data/CUB/CUBcluster8_256/cats22_256px_70_15_15_nonbbox}"
+DATA_PATH="${DATA_PATH:-/home/chatziko/PycharmProjects/PythonProject/IDMVAE/CUB_HQ/pregen_4x32x32_10x/IDMVAE_07-21_0_ep36_release}"
+HIGH_RES_DATA_PATH="${HIGH_RES_DATA_PATH:-/home/chatziko/PycharmProjects/PythonProject/IDMVAE/CUB_HQ}"
 PRETRAIN_CKPT="${PRETRAIN_CKPT:-}"
-DEFAULT_PRETRAIN_CKPT="/data/backed_up/shared/Data/CUB/DiT-XL-2-256x256.pt"
+DEFAULT_PRETRAIN_CKPT="/home/chatziko/PycharmProjects/PythonProject/IDMVAE/checkpoints/DiT-XL-2-256x256.pt"
 GPU_ID="${GPU_ID:-0}"
 MODEL="${MODEL:-DiT-XL/2}"
 EPOCHS="${EPOCHS:-20}"
-BATCH_SIZE="${BATCH_SIZE:-32}"
+BATCH_SIZE="${BATCH_SIZE:-1}"
 CKPT_EVERY="${CKPT_EVERY:-5000}"
 LOG_EVERY="${LOG_EVERY:-50}"
-NUM_WORKERS="${NUM_WORKERS:-8}"
+NUM_WORKERS="${NUM_WORKERS:-0}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"

@@ -20,12 +20,12 @@ set -euo pipefail
 # ------------------------------------------------------------------------------
 # Configuration
 # ------------------------------------------------------------------------------
-DATA_DIR="/data/backed_up/shared/Data/CUB/CUBcluster8_256/cats22_256px_70_15_15_nonbbox"  # cats22_256px_70_15_15_nonbbox_seed1087
-EXPERIMENT="CUBcluster8_256_IDMVAE_release"
+DATA_DIR="/home/chatziko/PycharmProjects/PythonProject/IDMVAE/CUB_HQ"  # cats22_256px_70_15_15_nonbbox_seed1087
+EXPERIMENT="CUBcluster8_256_IDMVAE_release_14_00_12"
 TITLE="IDMVAE"
-RUN_ID="04-20_0_gpu1_Adam_ltCL_TDdevl_lw0.1_K1_B256_Normal_Laplace_b1.0_10.0_40.0_256_256_s2"
+RUN_ID="07-21_0_gpu0_ltCL_TDeval_lw0.1_K1_B256_Normal_Laplace_b1.0_10.0_40.0_256_256_s2"
 RUN_ID_key=$(echo "$RUN_ID" | cut -d'_' -f1-2)
-CKPT_EPOCH=7
+CKPT_EPOCH=36
 # MAX_SAMPLES=10  # Optional: limit number of samples for quicker testing (comment out or set to empty for all samples)
 
 # RUN_ID NOTE:
@@ -37,7 +37,7 @@ CKPT_EPOCH=7
 # DMVAE: 11-19_14_gpu3_DMVAE_CUB256_LCmu_Mpoe_W256_Z256_B256_CUBcluster8_2025_11_19_05_40_43_801775
 
 # GPU configuration
-gpuid=1
+gpuid=0
 GPU_ID="${GPU_ID:-$gpuid}"
 export CUDA_VISIBLE_DEVICES="${GPU_ID}"
 
@@ -101,7 +101,7 @@ CMD=(
     --output-dir "${OUTPUT_DIR}"
     --batch-size "${BATCH_SIZE}"
     --sd-vae "${SD_VAE_VARIANT}"
-    --num-workers 64
+    --num-workers 0
 )
 
 if [ "${SKIP_10X}" -eq 1 ]; then
