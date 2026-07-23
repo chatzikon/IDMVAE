@@ -367,55 +367,198 @@ def load_structured_samples(save_dir, device, num_cols=10):
     return samples_on_device, verification_grid
 
 
-def get_test_CUBcluster8_samples(CUBcluster8, num_testing_images, device, args, pretrained_vae=None, seed=42):
+def get_test_CUBcluster8_samples(
+    dataset,
+    num_testing_images,
+    device,
+    args,
+    pretrained_vae=None,
+    seed=42,
+    dataset_name=None,
+):
     """
-    Function to get CUBcluster8 samples for qualitative examples of cross-reconstruction at test time.
-    It randomly samples one image from each of the 8 clusters.
-    A seed is used to make the random sampling deterministic.
+    Select one qualitative image-caption pair from every shared class.
+
+    Supported label conventions:
+        UCF:
+            classes 0..7
+
+        CUBcluster8 / CUBcluster8_256:
+            classes 1..8
+            class 0 is the optional "Other" category and is excluded
+
+    The function never uses an unbounded while-loop. If a required
+    class is missing from the selected split, it raises an error.
     """
-    random.seed(seed)
-    samples_data = []
+
+    del pretrained_vae  # Retained only for call compatibility.
+
+    if dataset_name is None:
+        dataset_name = getattr(args, "dataset", None)
+
+    supported_datasets = {
+        "UCF",
+        "CUBcluster8",
+        "CUBcluster8_256",
+    }
+
+    if dataset_name not in supported_datasets:
+        raise ValueError(
+            f"Unsupported dataset {dataset_name!r}. "
+            f"Expected one of {sorted(supported_datasets)}."
+        )
+
+    rng = random.Random(seed)
+
+    # num_testing_images is currently the pair-level dataset length.
+    num_pairs_to_search = min(
+        int(num_testing_images),
+        len(dataset),
+    )
+
+    # Original image index -> pair positions for all its captions.
+    pair_positions_by_image = defaultdict(list)
+
+    # Shared class -> unique original image indices in this split.
+    image_indices_by_class = defaultdict(set)
+
+    for pair_position in range(num_pairs_to_search):
+        img_idx, cap_idx = dataset.pairs[pair_position]
+        img_idx = int(img_idx)
+
+        pair_positions_by_image[img_idx].append(
+            pair_position
+        )
+
+        class_id = int(
+            dataset.labels_cluster[img_idx]
+        )
+
+        image_indices_by_class[class_id].add(
+            img_idx
+        )
+
+    if dataset_name == "UCF":
+        # UCF shared/crime labels are zero-based.
+        target_class_ids = list(range(8))
+
+    else:
+        # CUB cluster labels are 1..8.
+        # Label 0 corresponds to "Other".
+        target_class_ids = list(range(1, 9))
+
+    missing_classes = [
+        class_id
+        for class_id in target_class_ids
+        if not image_indices_by_class[class_id]
+    ]
+
+    if missing_classes:
+        available_classes = sorted(
+            class_id
+            for class_id, image_indices
+            in image_indices_by_class.items()
+            if image_indices
+        )
+
+        raise RuntimeError(
+            "Could not select one qualitative sample from every "
+            f"class for dataset {dataset_name}. "
+            f"Missing classes: {missing_classes}. "
+            f"Classes available in this split: {available_classes}."
+        )
+
     imgs = []
     cap_tensors = []
-    samples = []
     labels = []
     raw_selected_captions = []
     raw_all_captions = []
 
-    for i in range(8):
-        while True:
-            random_idx = random.randint(0, num_testing_images - 1)
-            datas, targets_tuple = CUBcluster8.__getitem__(random_idx)
-            
-            target_cluster_label = targets_tuple[0]
+    for class_id in target_class_ids:
+        # First select an image uniformly from the class.
+        candidate_image_indices = sorted(
+            image_indices_by_class[class_id]
+        )
 
-            # cluster label is from 1 to 8, the 0 only in train set as "Other" cluster
-            if target_cluster_label == i + 1:
-                img, cap_tensor = datas
+        selected_img_idx = rng.choice(
+            candidate_image_indices
+        )
 
-                # Get raw caption text
-                _img_idx, cap_idx = CUBcluster8.pairs[random_idx]
-                raw_selected_caption = CUBcluster8.captions[_img_idx][cap_idx]
-                raw_all_caption = CUBcluster8.captions[_img_idx]
+        # Then select one of that image's captions uniformly.
+        candidate_pair_positions = (
+            pair_positions_by_image[selected_img_idx]
+        )
 
-                img = img.to(device)
-                cap_tensor = cap_tensor.to(device)
-                
-                samples_data.append((img, cap_tensor))
-                imgs.append(img)
-                cap_tensors.append(cap_tensor)
-                labels.append(targets_tuple)
-                raw_selected_captions.append(raw_selected_caption)
-                raw_all_captions.append(raw_all_caption)
-                
-                break
-    
-    if not imgs:
-        raise RuntimeError("No samples found for the given indices or IDs.")
+        selected_pair_position = rng.choice(
+            candidate_pair_positions
+        )
 
-    samples = [torch.stack(imgs, dim=0), torch.stack(cap_tensors, dim=0)]
-        
-    return samples, labels, raw_selected_captions, raw_all_captions
+        datas, targets_tuple = dataset[
+            selected_pair_position
+        ]
+
+        img, cap_tensor = datas
+
+        pair_img_idx, cap_idx = dataset.pairs[
+            selected_pair_position
+        ]
+
+        pair_img_idx = int(pair_img_idx)
+        cap_idx = int(cap_idx)
+
+        if pair_img_idx != selected_img_idx:
+            raise RuntimeError(
+                "Pair/image index mismatch: "
+                f"selected image={selected_img_idx}, "
+                f"pair image={pair_img_idx}."
+            )
+
+        selected_label = int(targets_tuple[0])
+
+        if selected_label != class_id:
+            raise RuntimeError(
+                "Class-label mismatch: "
+                f"requested class={class_id}, "
+                f"selected label={selected_label}."
+            )
+
+        raw_selected_caption = dataset.captions[
+            selected_img_idx
+        ][cap_idx]
+
+        all_image_captions = dataset.captions[
+            selected_img_idx
+        ]
+
+        imgs.append(img.to(device))
+        cap_tensors.append(cap_tensor.to(device))
+        labels.append(targets_tuple)
+        raw_selected_captions.append(
+            raw_selected_caption
+        )
+        raw_all_captions.append(
+            all_image_captions
+        )
+
+    samples = [
+        torch.stack(imgs, dim=0),
+        torch.stack(cap_tensors, dim=0),
+    ]
+
+    print(
+        f"Selected {len(target_class_ids)} qualitative samples "
+        f"for {dataset_name}, one from each class: "
+        f"{target_class_ids}"
+    )
+
+    return (
+        samples,
+        labels,
+        raw_selected_captions,
+        raw_all_captions,
+    )
+
+
 # =============================
 def get_and_log_CUBcluster8_samples_by_Idx_or_ID(
         CUBcluster8, num_testing_images, device, args, indices=None, ids=None
@@ -468,6 +611,19 @@ def get_and_log_CUBcluster8_samples_by_Idx_or_ID(
             # Cluster : 1      2      3      4      5      6      7      8
 
                         ]
+
+    elif args.dataset == "UCF":
+        if indices is None and ids is None:
+            raise ValueError(
+                "For UCF, provide explicit indices or image IDs."
+            )
+
+        indices_group = (
+            list(indices)
+            if indices is not None
+            else None
+        )
+
     ids_group = ids if ids is not None \
                 else None
 
@@ -479,7 +635,7 @@ def get_and_log_CUBcluster8_samples_by_Idx_or_ID(
     samples = []
     labels = []
     raw_selected_captions = []  # just the first of the image
-    raw_all_captions = []       # all 10 captions for the image
+    raw_all_captions = []       # all captions for the image
 
     if indices_group is not None:
         # Create a reverse map from the full dataset's img_idx to the local pair index
@@ -1019,7 +1175,7 @@ def build_matrix(dataset):
 def train_and_evaluate_linear_model_from_matrices(
     x_train, y_train, solver="saga", multi_class="multinomial", tol=0.1, C=10
 ):
-    model = LogisticRegression(solver=solver, multi_class=multi_class, tol=tol, C=C)
+    model = LogisticRegression(solver=solver, tol=tol, C=C)
     model.fit(x_train, y_train)
     return model
 
@@ -1035,7 +1191,7 @@ def train_and_evaluate_linear_model(
     x_train = scaler.fit_transform(x_train)
     x_test = scaler.transform(x_test)
 
-    model = LogisticRegression(solver=solver, multi_class=multi_class, tol=tol, C=C)
+    model = LogisticRegression(solver=solver,  tol=tol, C=C)
     model.fit(x_train, y_train)
 
     test_accuracy = model.score(x_test, y_test)

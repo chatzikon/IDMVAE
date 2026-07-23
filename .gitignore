@@ -214,3 +214,9 @@ CUB_HQ.zip
 images.pt
 CUB_HQ/
 checkpoints/
+archive/
+
+tests/
+archive.zip
+archive_init.zip
+colour_inspection/

@@ -9,14 +9,14 @@
 MODE="train"  # train, resume, test, develop, print_params — set train when not evaluating a checkpoint
 test_time_dataset_state="eval"  # eval, test
 
-CUB_ROOT="/home/chatziko/PycharmProjects/PythonProject/IDMVAE/CUB_HQ"
+CUB_ROOT="/home/chatziko/PycharmProjects/PythonProject/IDMVAE/archive"
 DENOISER_ROOT="/data/backed_up/shared/Data/CUB/weiran_dit_denoisers"
 CUB_TSNE_ROOT="${CUB_TSNE_ROOT:-../outputs/t_SNE}"
 
-DATASET="CUBcluster8_256"
+DATASET="UCF_IC"
 marker="$(date +"%H_%M_%S")"
 DATADIR="${CUB_ROOT}/"
-EXPERIMENT="CUBcluster8_256_IDMVAE_release_${marker}"
+EXPERIMENT="UCF_IC_release_${marker}"
 CPt_OUTPUTDIR="${EXPERIMENT}"
 
 OUTPUTDIR="../outputs"
