@@ -259,7 +259,9 @@ device = torch.device("cuda" if args.cuda else "cpu")
 print(device)
 
 modelC = getattr(models, 'IDMVAE_CUB_Image_Captions')
-model = modelC(args).to(device)
+model = modelC(788, args).to(device)
+
+
 
 
 def _log_param_counts(tag: str):
@@ -423,14 +425,19 @@ effective_num_workers = (
     0 if args.use_pretrain_feats else args.num_workers
 )
 
+# g = torch.Generator()
+# g.manual_seed(0)
+#
+# kwargs = {
+#     "num_workers": effective_num_workers,
+#     "pin_memory": device.type == "cuda",
+#     "generator": g,
+# }
+
+kwargs = {'num_workers': effective_num_workers, 'pin_memory': True} if device == 'cuda' else {}
 g = torch.Generator()
 g.manual_seed(0)
-
-kwargs = {
-    "num_workers": effective_num_workers,
-    "pin_memory": device.type == "cuda",
-    "generator": g,
-}
+kwargs['generator'] = g
 
 # Load UCF Image-Captions, currently focus on UCF
 print('Loading UCF Image-Captions dataset: {}'.format(args.dataset))
@@ -534,6 +541,8 @@ if args.dataset == 'UCF':
         args=args,  # Pass args for additional configurations
         shared_data=shared_data, vae=vae, device=device
     )
+
+
     # Cluster-only train set (8 clusters without Other)
     train_cluster_dataset = UCFDataset(
         datadir=base_dir,

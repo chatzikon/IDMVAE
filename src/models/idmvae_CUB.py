@@ -24,8 +24,8 @@ class CUB_Image_Captions(IDMVAE):
     """
     IDMVAE subclass for CUB Image-Captions Experiment
     """
-    def __init__(self, params):
-        super(CUB_Image_Captions, self).__init__(params, CUB_Image, CUB_Sentence)
+    def __init__(self, vocab_size, params):
+        super(CUB_Image_Captions, self).__init__(vocab_size, params, CUB_Image, CUB_Sentence)
 
         self.vaes[0].llik_scaling = self.vaes[1].maxSentLen / prod(self.vaes[0].dataSize)
         self.vaes[1].llik_scaling = params.llik_scaling_sent

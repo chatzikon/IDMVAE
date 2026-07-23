@@ -13,10 +13,10 @@ CUB_ROOT="/home/chatziko/PycharmProjects/PythonProject/IDMVAE/archive"
 DENOISER_ROOT="/data/backed_up/shared/Data/CUB/weiran_dit_denoisers"
 CUB_TSNE_ROOT="${CUB_TSNE_ROOT:-../outputs/t_SNE}"
 
-DATASET="UCF_IC"
+DATASET="UCF"
 marker="$(date +"%H_%M_%S")"
 DATADIR="${CUB_ROOT}/"
-EXPERIMENT="UCF_IC_release_${marker}"
+EXPERIMENT="UCF_release_${marker}"
 CPt_OUTPUTDIR="${EXPERIMENT}"
 
 OUTPUTDIR="../outputs"
@@ -24,7 +24,7 @@ OUTPUTDIR="../outputs"
 # Test-only: set MODE=test and either TEST_CHECKPOINT_PATH (absolute recommended) or CPt_RUNID + TEST_CHECKPOINT_EPOCH.
 TEST_CHECKPOINT_EPOCH=1
 TEST_CHECKPOINT_EPOCHS=()  # Example: (10 20 30 40)
-CPt_RUNID="04-17_1_gpu1_Adam_ltCL_TDdevl_lw0.1_K1_B256_Normal_Laplace_b1.0_10.0_40.0_256_256_s2"
+CPt_RUNID="04-17_1_gpu1_Adam_ltCL_TDdevl_lw0.1_K1_B256_Normal_Laplace_b1.0_10.0_40.0_256_256_s2_UCF"
 CPt_RUN_key=$(echo "$CPt_RUNID" | cut -d'_' -f1-2)
 CPt_NOTE="ID${CPt_RUN_key}-EP${TEST_CHECKPOINT_EPOCH}"
 CPt_BASE_PATH="../outputs/${CPt_OUTPUTDIR}/checkpoints/${CPt_RUNID}"
@@ -38,7 +38,7 @@ if [ "$MODE" = "test" ]; then
 fi
 
 # Model hyperparameters (Appendix C.2: 50 epochs; λ1=40, λ2=10, diffusion 0.1)
-BATCH=128
+BATCH=64
 K=1
 EPOCHS=50
 SEED=2
@@ -141,7 +141,7 @@ RUN_NOTE="${RUN_NOTE_PREFIX}${date}_${number}_gpu${gpuid}${note}"
 tSNE_save_dir="${CUB_TSNE_ROOT}/${EXPERIMENT}/${date}_${number}_${note}"
 
 CMD_ARGS_BASE=(
-  "python" "train_IDMVAE_CUB.py"
+  "python" "train_IDMVAE_UCF.py"
   "--experiment" "${EXPERIMENT}"
   "--K" "${K}"
   "--batch-size" "${BATCH}"
@@ -165,7 +165,6 @@ CMD_ARGS_BASE=(
   "--lv_umap_n_neighbors" "${LV_N_NEIGHBORS}"
   "--lv_umap_min_dist" "${LV_MIN_DIST}"
   "--test_time_dataset_state" "${test_time_dataset_state}"
-  "--degree_away_center_threshold" "${thres_deg}"
   "--num_workers" "${NUM_WORKERS}"
   "--use_pretrain_feats"
 )

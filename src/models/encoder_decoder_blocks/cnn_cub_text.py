@@ -16,10 +16,11 @@ vocabSize = 1590
 class Enc(nn.Module):
     """ Generate latent parameters for sentence data. """
 
-    def __init__(self, latentDim_w, latentDim_z, dist):
+    def __init__(self, latentDim_w, latentDim_z, dist, vocab_size=1590):
         super(Enc, self).__init__()
         self.dist = dist
-        self.embedding = nn.Linear(vocabSize, embeddingDim)
+        self.vocab_size = vocab_size
+        self.embedding = nn.Linear(self.vocab_size, embeddingDim)
         self.enc_w = nn.Sequential(
             # input size: 1 x 32 x 128
             nn.Conv2d(1, fBase, 4, 2, 1, bias=True),
@@ -82,8 +83,11 @@ class Enc(nn.Module):
 class Dec(nn.Module):
     """ Generate a sentence given a sample from the latent space. """
 
-    def __init__(self, latentDim_w, latentDim_z):
+    def __init__(self, latentDim_w, latentDim_z, vocab_size=1590):
         super(Dec, self).__init__()
+
+        self.vocab_size = vocab_size
+
         self.dec_w = nn.Sequential(
             nn.ConvTranspose2d(latentDim_w, fBase * 16, 4, 1, 0, bias=True),
             nn.BatchNorm2d(fBase * 16),
@@ -132,7 +136,7 @@ class Dec(nn.Module):
             # Output size: 1 x 64 x 256
         )
         # inverts the 'embedding' module upto one-hotness
-        self.toVocabSize = nn.Linear(embeddingDim, vocabSize)
+        self.toVocabSize = nn.Linear(embeddingDim, self.vocab_size)
 
         self.latent_dim_w = latentDim_w
         self.latent_dim_z = latentDim_z
@@ -149,5 +153,5 @@ class Dec(nn.Module):
         out = self.dec_h(h)
         out = out.view(*z.size()[:-3], *out.size()[1:]).view(-1, embeddingDim)
         # The softmax is key for this to work
-        ret = [self.softmax(self.toVocabSize(out).view(*z.size()[:-3], maxSentLen, vocabSize))]
+        ret = [self.softmax(self.toVocabSize(out).view(*z.size()[:-3], maxSentLen, self.vocab_size))]
         return ret

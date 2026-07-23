@@ -200,7 +200,7 @@ def create_splits(
 
     train_indices, temporary_indices = train_test_split(
         all_indices,
-        test_size=0.30,
+        test_size=0.15,
         random_state=RANDOM_STATE,
         stratify=labels_numpy,
     )
@@ -209,7 +209,7 @@ def create_splits(
 
     validation_indices, test_indices = train_test_split(
         temporary_indices,
-        test_size=0.50,
+        test_size=0.67,
         random_state=RANDOM_STATE,
         stratify=temporary_labels,
     )

@@ -23,13 +23,13 @@ vocabSize = 1590
 class CUB_Sentence(VAE):
     """ Unimodal VAE subclass for Text modality CUB experiment """
 
-    def __init__(self, params):
+    def __init__(self, vocab_size, params):
         super(CUB_Sentence, self).__init__(
             prior_dist=dist.Normal if params.priorposterior == 'Normal' else dist.Laplace,      # prior (continuous)
             likelihood_dist=dist.OneHotCategorical,                                             # likelihood (discrete)
             post_dist=dist.Normal if params.priorposterior == 'Normal' else dist.Laplace,       # posterior
-            enc=Enc(params.latent_dim_w, params.latent_dim_z, dist=params.priorposterior),      # Encoder model
-            dec=Dec(params.latent_dim_w, params.latent_dim_z),                                  # Decoder model
+            enc=Enc(params.latent_dim_w, params.latent_dim_z, dist=params.priorposterior, vocab_size=vocab_size),      # Encoder model
+            dec=Dec(params.latent_dim_w, params.latent_dim_z, vocab_size=vocab_size),                                  # Decoder model
             params=params)                                                                      # Params (args passed to main)
 
         self.modelName = 'cubC'

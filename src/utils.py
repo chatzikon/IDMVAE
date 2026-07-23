@@ -17,6 +17,7 @@ from sklearn.preprocessing import MinMaxScaler
 from torch.utils.data import Subset, Dataset, DataLoader
 from collections import OrderedDict
 from enum import Enum
+from collections import defaultdict
 
 
 class CrossModalEvalForwardMode(str, Enum):

@@ -162,6 +162,10 @@ class UCFDataset(Dataset):
         self.w2i = vocab['w2i']
         self.i2w = vocab['i2w']  # Make index-to-word mapping available, e.g., for WandB
         self.vocab_size = len(self.w2i)
+
+
+
+
         self.pad_token = '<pad>'
         self.eos_token = '<eos>'
         self.unk_idx = self.w2i.get('<unk>', self.w2i.get('<exc>', 0))

@@ -13,7 +13,7 @@ class IDMVAE(nn.Module):
     """
     IDMVAE class definition.
     """
-    def __init__(self, params, *vaes): # *: # Captures all remaining positional arguments
+    def __init__(self, vocab_size, params, *vaes): # *: # Captures all remaining positional arguments
         super(IDMVAE, self).__init__()
         self.num_views = len(vaes)
         self.modelName = None  # Filled-in in subclass
@@ -22,8 +22,11 @@ class IDMVAE(nn.Module):
         self.diffusion_loss_weight = params.diffusion_loss_weight
         # Some scripts (e.g., older PolyMNIST configs) might not define this flag; default to False.
         self.use_pretrain_feats = getattr(params, "use_pretrain_feats", False)
-        self.vaes = nn.ModuleList([vae(params) for vae in vaes]) # List of unimodal VAEs (one for each modality)
-
+        #self.vaes = nn.ModuleList([vae(vocab_size, params) for vae in vaes]) # List of unimodal VAEs (one for each modality)
+        self.vaes = nn.ModuleList([
+            vaes[0](params),  # image VAE
+            vaes[1](vocab_size, params),  # sentence VAE
+        ])
         device = torch.device("cuda" if torch.cuda.is_available() and not params.no_cuda else "cpu")
 
         vae_variant = getattr(params, "vae", "mse")
