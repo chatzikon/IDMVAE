@@ -136,7 +136,11 @@ def load_model_light(filepath, modelC, args, device="cpu"):
     Returns:
         model (torch.nn.Module): The loaded model.
     """
-    model = modelC(args).to(
+    if args.dataset=='UCF':
+        vocab_size=788
+    else:
+        vocab_size=1590
+    model = modelC(vocab_size, args).to(
         device
     )  # Instantiate the model.
     model.load_state_dict(
