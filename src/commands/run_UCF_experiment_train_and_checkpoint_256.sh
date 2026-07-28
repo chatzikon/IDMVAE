@@ -9,7 +9,7 @@
 MODE="train"  # train, resume, test, develop, print_params — set train when not evaluating a checkpoint
 test_time_dataset_state="eval"  # eval, test
 
-CUB_ROOT="/home/chatziko/PycharmProjects/PythonProject/IDMVAE/archive"
+CUB_ROOT="/home/chatziko/PycharmProjects/PythonProject/IDMVAE/archive/UCA Image Dataset/processed/"
 DENOISER_ROOT="/data/backed_up/shared/Data/CUB/weiran_dit_denoisers"
 CUB_TSNE_ROOT="${CUB_TSNE_ROOT:-../outputs/t_SNE}"
 
@@ -38,7 +38,7 @@ if [ "$MODE" = "test" ]; then
 fi
 
 # Model hyperparameters (Appendix C.2: 50 epochs; λ1=40, λ2=10, diffusion 0.1)
-BATCH=64
+BATCH=128
 K=1
 EPOCHS=50
 SEED=2

@@ -259,7 +259,7 @@ device = torch.device("cuda" if args.cuda else "cpu")
 print(device)
 
 modelC = getattr(models, 'IDMVAE_CUB_Image_Captions')
-model = modelC(788, args).to(device)
+model = modelC(3958, args).to(device)
 
 
 
