@@ -1,6 +1,14 @@
 # Train IDMVAE on CUB Image-Captions dataset
 import os
 
+import matplotlib
+
+matplotlib.use("Agg")
+
+print("Matplotlib backend:", matplotlib.get_backend())
+
+import matplotlib.pyplot as plt
+
 
 # Deterministic behavior:
 # https://pytorch.org/docs/stable/notes/randomness.html
@@ -1667,6 +1675,7 @@ def run_evaluation(epoch):
     if args.enable_tSNE_UMAP:
         visualize_ratio = 1.0  # Use full evaluation set by default.
 
+
         view0_z_cluster, view0_w_cluster_mis = visualize_latents_with_priors(
             model, model.vaes[0], model.encoders[0], test_time_image_loader, test_time_image_loader,
             "m0_img_z_cluster", "m0_img_w_cluster_mis", device=device, figure=1, condition_type='shared',
@@ -1674,12 +1683,16 @@ def run_evaluation(epoch):
             save_file=os.path.join(args.tSNE_save_dir,
                                    'view0_shared_image.png'))  # device=device
 
-        view1_shared_caption, _ = visualize_latents_with_priors(
+
+
+        view1_shared_caption, view1_caption_mis = visualize_latents_with_priors(
             model, model.vaes[1], model.encoders[1], test_time_caption_loader, test_time_caption_loader,
             "view1_shared_caption", "N/A?", device=device, figure=2, condition_type='shared',
             view_index=1, batch_size=args.batch_size, visualize_ratio=visualize_ratio,
             save_file=os.path.join(args.tSNE_save_dir,
                                    'view1_shared_caption.png'))
+
+
 
         view0_w_color, view0_z_color_mis = visualize_latents_with_priors(
             model, model.vaes[0], model.encoders[0], test_time_image_loader, test_time_image_loader,
@@ -1688,14 +1701,26 @@ def run_evaluation(epoch):
             save_file=os.path.join(args.tSNE_save_dir,
                                    'view0_private_image.png'))
 
+
+
         # log tSNE images to wandb
-        wandb.log({'tSNE_or_UMAP/m0_z_cluster': wandb.Image(view0_z_cluster)}, step=epoch)
-        wandb.log({'tSNE_or_UMAP/m0_w_cluster_mis': wandb.Image(view0_w_cluster_mis)}, step=epoch)
+        wandb.log(
+            {
+                "tSNE_or_UMAP/m0_z_cluster": wandb.Image(view0_z_cluster),
+                "tSNE_or_UMAP/m0_w_cluster_mis": wandb.Image(view0_w_cluster_mis),
+                "tSNE_or_UMAP/m1_shared_caption": wandb.Image(view1_shared_caption),
+                "tSNE_or_UMAP/m0_w_color": wandb.Image(view0_w_color),
+                "tSNE_or_UMAP/m0_z_color_mis": wandb.Image(view0_z_color_mis),
+            },
+            step=epoch,
+        )
 
-        wandb.log({'tSNE_or_UMAP/m1_shared_caption': wandb.Image(view1_shared_caption)}, step=epoch)
-
-        wandb.log({'tSNE_or_UMAP/m0_w_color': wandb.Image(view0_w_color)}, step=epoch)
-        wandb.log({'tSNE_or_UMAP/m0_z_color_mis': wandb.Image(view0_z_color_mis)}, step=epoch)
+        plt.close(view0_z_cluster)
+        plt.close(view0_w_cluster_mis)
+        plt.close(view1_shared_caption)
+        plt.close(view1_caption_mis)
+        plt.close(view0_w_color)
+        plt.close(view0_z_color_mis)
 
 
 if __name__ == '__main__':

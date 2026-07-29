@@ -38,7 +38,7 @@ if [ "$MODE" = "test" ]; then
 fi
 
 # Model hyperparameters (Appendix C.2: 50 epochs; λ1=40, λ2=10, diffusion 0.1)
-BATCH=128
+BATCH=64
 K=1
 EPOCHS=50
 SEED=2

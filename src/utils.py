@@ -445,7 +445,7 @@ def get_test_CUBcluster8_samples(
 
     if dataset_name == "UCF":
         # UCF shared/crime labels are zero-based.
-        target_class_ids = list(range(8))
+        target_class_ids = list(range(14))
 
     else:
         # CUB cluster labels are 1..8.
