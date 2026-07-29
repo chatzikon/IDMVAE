@@ -9,12 +9,32 @@ print("Matplotlib backend:", matplotlib.get_backend())
 
 import matplotlib.pyplot as plt
 
+import gc
+import wandb
+import numpy as np
+import traceback
 
 # Deterministic behavior:
 # https://pytorch.org/docs/stable/notes/randomness.html
 # https://docs.nvidia.com/cuda/cublas/index.html#cublasApi_reproducibility
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # Set before importing torch
 # os.environ["WANDB_MODE"] = "disabled"
+
+_original_Image = wandb.Image
+
+def debug_Image(data, *args, **kwargs):
+    print("\nwandb.Image called")
+    print("Type:", type(data))
+
+    if isinstance(data, np.ndarray):
+        print("Range:", data.min(), data.max())
+        print("Shape:", data.shape)
+        print("Dtype:", data.dtype)
+
+    traceback.print_stack(limit=8)
+    return _original_Image(data, *args, **kwargs)
+
+wandb.Image = debug_Image
 
 import glob
 import re
@@ -33,7 +53,6 @@ from utils import CrossModalEvalForwardMode
 from objectives import compute_idmvae_loss
 from utils import Logger, save_model_light
 from utils import unpack_data_CUBcluster8, get_test_CUBcluster8_samples
-import wandb
 import textwrap
 import torchvision.transforms as transforms
 
@@ -1685,6 +1704,23 @@ def run_evaluation(epoch):
 
 
 
+        wandb.log(
+            {
+                "tSNE_or_UMAP/m0_z_cluster": wandb.Image(view0_z_cluster),
+                "tSNE_or_UMAP/m0_w_cluster_mis": wandb.Image(view0_w_cluster_mis)
+            },
+            step=epoch,
+        )
+
+        plt.close(view0_z_cluster)
+        plt.close(view0_w_cluster_mis)
+
+        del view0_z_cluster, view0_w_cluster_mis
+        gc.collect()
+        torch.cuda.empty_cache()
+
+
+
         view1_shared_caption, view1_caption_mis = visualize_latents_with_priors(
             model, model.vaes[1], model.encoders[1], test_time_caption_loader, test_time_caption_loader,
             "view1_shared_caption", "N/A?", device=device, figure=2, condition_type='shared',
@@ -1692,6 +1728,21 @@ def run_evaluation(epoch):
             save_file=os.path.join(args.tSNE_save_dir,
                                    'view1_shared_caption.png'))
 
+
+        wandb.log(
+            {
+                "tSNE_or_UMAP/m1_shared_caption": wandb.Image(view1_shared_caption),
+            },
+            step=epoch,
+        )
+
+        plt.close(view1_shared_caption)
+        plt.close(view1_caption_mis)
+
+
+        del view1_shared_caption, view1_caption_mis
+        gc.collect()
+        torch.cuda.empty_cache()
 
 
         view0_w_color, view0_z_color_mis = visualize_latents_with_priors(
@@ -1703,24 +1754,23 @@ def run_evaluation(epoch):
 
 
 
-        # log tSNE images to wandb
         wandb.log(
             {
-                "tSNE_or_UMAP/m0_z_cluster": wandb.Image(view0_z_cluster),
-                "tSNE_or_UMAP/m0_w_cluster_mis": wandb.Image(view0_w_cluster_mis),
-                "tSNE_or_UMAP/m1_shared_caption": wandb.Image(view1_shared_caption),
                 "tSNE_or_UMAP/m0_w_color": wandb.Image(view0_w_color),
-                "tSNE_or_UMAP/m0_z_color_mis": wandb.Image(view0_z_color_mis),
+                "tSNE_or_UMAP/m0_z_color_mis": wandb.Image(view0_z_color_mis)
             },
             step=epoch,
         )
 
-        plt.close(view0_z_cluster)
-        plt.close(view0_w_cluster_mis)
-        plt.close(view1_shared_caption)
-        plt.close(view1_caption_mis)
         plt.close(view0_w_color)
         plt.close(view0_z_color_mis)
+
+        del view0_w_color, view0_z_color_mis
+        gc.collect()
+        torch.cuda.empty_cache()
+
+
+
 
 
 if __name__ == '__main__':

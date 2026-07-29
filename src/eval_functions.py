@@ -15,6 +15,8 @@ from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score, accuracy_score, confusion_matrix, ConfusionMatrixDisplay
 
+import gc
+
 import warnings
 
 import wandb
@@ -520,16 +522,16 @@ def visualize_latents_with_priors(
         #      change the .sh diffusion_loss_weight to 0.0 and load the diffusion checkpoint.
 
     # 1) Embed posterior: same as before
-    embedded_valid_set = EmbeddedDataset(
-        base_dataloader=valid_loader,
-        vae=vae,
-        encoder=encoder,
-        device=device,
-        condition_type=condition_type,
-        use_mean=model.params.use_mean_in_latent_visualization,
-        view_idx=view_index,
-        batch_size=batch_size,
-    )
+    # embedded_valid_set = EmbeddedDataset(
+    #     base_dataloader=valid_loader,
+    #     vae=vae,
+    #     encoder=encoder,
+    #     device=device,
+    #     condition_type=condition_type,
+    #     use_mean=model.params.use_mean_in_latent_visualization,
+    #     view_idx=view_index,
+    #     batch_size=batch_size,
+    # )
     embedded_test_set = EmbeddedDataset(
         base_dataloader=test_loader,
         vae=vae,
@@ -540,16 +542,16 @@ def visualize_latents_with_priors(
         view_idx=view_index,
         batch_size=batch_size,
     )
-    original_valid_set = EmbeddedDataset(
-        base_dataloader=valid_loader,
-        vae=vae,
-        encoder=None,
-        device=device,
-        condition_type=condition_type,
-        use_mean=model.params.use_mean_in_latent_visualization,
-        view_idx=view_index,
-        batch_size=batch_size,
-    )
+    # original_valid_set = EmbeddedDataset(
+    #     base_dataloader=valid_loader,
+    #     vae=vae,
+    #     encoder=None,
+    #     device=device,
+    #     condition_type=condition_type,
+    #     use_mean=model.params.use_mean_in_latent_visualization,
+    #     view_idx=view_index,
+    #     batch_size=batch_size,
+    # )
     original_test_set = EmbeddedDataset(
         base_dataloader=test_loader,
         vae=vae,
@@ -563,11 +565,11 @@ def visualize_latents_with_priors(
 
     # -- Step 2: Convert to matrices
     # Convert the two sets into 2D matrices for evaluation
-    FX_valid, Y_valid = build_matrix(
-        embedded_valid_set
-    )  # numpy.ndarray, shape: (N_v, W+Z), (N_v,)
+    #FX_valid, Y_valid = build_matrix(
+    #    embedded_valid_set
+    #)  # numpy.ndarray, shape: (N_v, W+Z), (N_v,)
     FX_test, Y_test = build_matrix(embedded_test_set)  # shape: (N_t, W+Z), (N_t,)
-    X_valid, _ = build_matrix(original_valid_set)  # shape: (N_t, C, H, W)
+    #X_valid, _ = build_matrix(original_valid_set)  # shape: (N_t, C, H, W)
     X_test, _ = build_matrix(original_test_set)  # shape: (N_t, C, H, W)
     # X_test, Y_test_orig = build_matrix(original_test_set)
 
@@ -586,20 +588,20 @@ def visualize_latents_with_priors(
     Y_test = Y_test[indices]  # = Y_test_orig[indices]
     W_dim = model.params.latent_dim_w
     Z_dim = model.params.latent_dim_z
-    FX_valid_Z = FX_valid[:, W_dim:]
+    #FX_valid_Z = FX_valid[:, W_dim:]
     FX_test_Z = FX_test[:, W_dim:]
-    FX_valid_W = FX_valid[:, :W_dim]
+    #FX_valid_W = FX_valid[:, :W_dim]
     FX_test_W = FX_test[:, :W_dim]
 
     # 3) Choose latent subspace (shared)
-    sub_valid = FX_test_Z
-    sub_valid_labels = Y_test
+    # sub_valid = FX_test_Z
+    # sub_valid_labels = Y_test
 
     # --Step 5: Choose latent space to visualize
     # Prior sampling currently uses rsample; mean-based prior option is not enabled.
     if condition_type is None or condition_type == "shared":
         # -> standard visualization: shared label - latent space Z
-        latent_space_valid = FX_valid_Z
+        #latent_space_valid = FX_valid_Z
         latent_space_test = FX_test_Z
         # Sample non-learnable prior
         prior_non = (
@@ -615,7 +617,7 @@ def visualize_latents_with_priors(
         )  # .squeeze(2)
 
         # -> mismatch visualization: shared label - latent space W
-        latent_space_valid_mismatch = FX_valid_W
+        #latent_space_valid_mismatch = FX_valid_W
         latent_space_test_mismatch = FX_test_W
         # Sample non-learnable prior
         prior_non_mismatch = (
@@ -632,7 +634,7 @@ def visualize_latents_with_priors(
         # n_labels = 10
     elif condition_type == "private":
         # -> standard visualization: private label - latent space W
-        latent_space_valid = FX_valid_W
+        #latent_space_valid = FX_valid_W
         latent_space_test = FX_test_W
         # Sample non-learnable prior
         prior_non = pw.rsample(torch.Size((n_prior,))).squeeze(1).cpu().numpy()
@@ -646,7 +648,7 @@ def visualize_latents_with_priors(
         )
 
         # -> mismatch visualization: private label - latent space Z
-        latent_space_valid_mismatch = FX_valid_Z
+        #latent_space_valid_mismatch = FX_valid_Z
         latent_space_test_mismatch = FX_test_Z
         # Sample non-learnable prior
         prior_non_mismatch = pz.rsample(torch.Size((n_prior,))).squeeze(1).cpu().numpy()
@@ -723,9 +725,9 @@ def visualize_latents_with_priors(
     # Posterior-only coordinates (first len(Y_test) points)
     N_test = len(Y_test)
     X_proj_post = X_proj_non[:N_test]
-    X_proj_post_diffusion = X_proj_diffusion[:N_test]  # Added to keep posterior-only diffusion coordinates aligned.
+    #X_proj_post_diffusion = X_proj_diffusion[:N_test]  # Added to keep posterior-only diffusion coordinates aligned.
     X_proj_post_mismatch = X_proj_non_mismatch[:N_test]
-    X_proj_post_diffusion_mismatch = X_proj_diffusion_mismatch[:N_test]
+    #X_proj_post_diffusion_mismatch = X_proj_diffusion_mismatch[:N_test]
 
     # 7) Plot: four panels side by side
     if plot_3d:
@@ -943,6 +945,23 @@ def visualize_latents_with_priors(
             ax4_mis.legend(loc="best")
 
     plt.tight_layout()
+
+    del embedded_test_set, original_test_set
+
+    del FX_test, FX_test_W, FX_test_Z, Y_test, X_test, latent_space_test, latent_space_test_mismatch
+    del X_all_non, X_all_diffusion, X_all_non_mismatch, X_all_diffusion_mismatch
+    del labels_all_learn, labels_all_non
+
+
+    del X_proj_non, X_proj_diffusion, X_proj_non_mismatch, X_proj_diffusion_mismatch, X_proj_post, X_proj_post_mismatch
+
+
+
+
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
 
     # # 9) Save
     # # if save_file:

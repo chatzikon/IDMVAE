@@ -54,5 +54,6 @@ exec python functions_post_eval/eval_CUB_denoiser.py \
   "--img2img_qzpw"\
   "--img2img_qwpz"\
   "--img_random"\
-  "--text_random"
+  "--text_random"\
+  "--use_diffusion_prior"
 
