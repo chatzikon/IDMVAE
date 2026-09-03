@@ -13,8 +13,12 @@ from PIL import Image
 # Paths
 # ---------------------------------------------------------------------
 
+# UCA_OUTPUT_ROOT = Path(
+#     "/home/chatziko/PycharmProjects/PythonProject/IDMVAE/archive/UCA Image Dataset/UCA_Frame_data"
+# )
+
 UCA_OUTPUT_ROOT = Path(
-    "/home/chatziko/PycharmProjects/PythonProject/IDMVAE/archive/UCA Image Dataset/UCA_Frame_data"
+    "/home/chatziko/PycharmProjects/PythonProject/IDMVAE/archive/UCA_image_dataset"
 )
 
 SPLIT_METADATA_FILES = {

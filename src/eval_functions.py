@@ -552,16 +552,16 @@ def visualize_latents_with_priors(
     #     view_idx=view_index,
     #     batch_size=batch_size,
     # )
-    original_test_set = EmbeddedDataset(
-        base_dataloader=test_loader,
-        vae=vae,
-        encoder=None,
-        device=device,
-        condition_type=condition_type,
-        use_mean=model.params.use_mean_in_latent_visualization,
-        view_idx=view_index,
-        batch_size=batch_size,
-    )
+    # original_test_set = EmbeddedDataset(
+    #     base_dataloader=test_loader,
+    #     vae=vae,
+    #     encoder=None,
+    #     device=device,
+    #     condition_type=condition_type,
+    #     use_mean=model.params.use_mean_in_latent_visualization,
+    #     view_idx=view_index,
+    #     batch_size=batch_size,
+    # )
 
     # -- Step 2: Convert to matrices
     # Convert the two sets into 2D matrices for evaluation
@@ -570,7 +570,7 @@ def visualize_latents_with_priors(
     #)  # numpy.ndarray, shape: (N_v, W+Z), (N_v,)
     FX_test, Y_test = build_matrix(embedded_test_set)  # shape: (N_t, W+Z), (N_t,)
     #X_valid, _ = build_matrix(original_valid_set)  # shape: (N_t, C, H, W)
-    X_test, _ = build_matrix(original_test_set)  # shape: (N_t, C, H, W)
+    #X_test, _ = build_matrix(original_test_set)  # shape: (N_t, C, H, W)
     # X_test, Y_test_orig = build_matrix(original_test_set)
 
     # 2) Split into shared (Z) and private (W)
@@ -584,8 +584,30 @@ def visualize_latents_with_priors(
     n_prior = min(n_prior, sample_size_int)  # Ensure n_prior does not exceed sample size
 
     FX_test = FX_test[indices]
-    X_test = X_test[indices]
+    #X_test = X_test[indices]
     Y_test = Y_test[indices]  # = Y_test_orig[indices]
+
+    X_test = None
+    original_test_set = None
+
+    if view_index == 0:
+        original_test_set = EmbeddedDataset(
+            base_dataloader=test_loader,
+            vae=vae,
+            encoder=None,
+            device=device,
+            condition_type=condition_type,
+            use_mean=model.params.use_mean_in_latent_visualization,
+            view_idx=view_index,
+            batch_size=batch_size,
+        )
+
+        X_test, _ = build_matrix(original_test_set)
+
+        # Keep the same samples as the latent representation
+        X_test = X_test[indices]
+
+
     W_dim = model.params.latent_dim_w
     Z_dim = model.params.latent_dim_z
     #FX_valid_Z = FX_valid[:, W_dim:]
@@ -792,7 +814,7 @@ def visualize_latents_with_priors(
         pts = X_proj_post[Y_test == lbl]
         ax2.scatter(pts[:, 0], pts[:, 1], alpha=0.6, s=10)  # , label=f'class {lbl}')
     # overlay thumbnails every 50 points
-    if X_test.ndim == 4:
+    if X_test is not None and X_test.ndim == 4:
         for i in range(0, N_test, 50):
             x0, y0 = X_proj_post[i]
             img = np.transpose(X_test[i], (1, 2, 0))
@@ -807,7 +829,7 @@ def visualize_latents_with_priors(
         pts = X_proj_post_mismatch[Y_test == lbl]
         ax2_mis.scatter(pts[:, 0], pts[:, 1], alpha=0.6, s=10)  # , label=f'class {lbl}')
     # overlay thumbnails every 50 points
-    if X_test.ndim == 4:
+    if X_test is not None and X_test.ndim == 4:
         for i in range(0, N_test, 50):
             x0, y0 = X_proj_post_mismatch[i]
             img = np.transpose(X_test[i], (1, 2, 0))

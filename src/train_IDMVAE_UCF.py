@@ -2,6 +2,9 @@
 import os
 
 import matplotlib
+from torch._inductor import augmented_graph_helper
+
+#from IDMVAE.src.train_IDMVAE_CUB import augmentation_transform
 
 matplotlib.use("Agg")
 
@@ -13,6 +16,7 @@ import gc
 import wandb
 import numpy as np
 import traceback
+import logging
 
 # Deterministic behavior:
 # https://pytorch.org/docs/stable/notes/randomness.html
@@ -20,21 +24,31 @@ import traceback
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # Set before importing torch
 # os.environ["WANDB_MODE"] = "disabled"
 
-_original_Image = wandb.Image
-
-def debug_Image(data, *args, **kwargs):
-    print("\nwandb.Image called")
-    print("Type:", type(data))
-
-    if isinstance(data, np.ndarray):
-        print("Range:", data.min(), data.max())
-        print("Shape:", data.shape)
-        print("Dtype:", data.dtype)
-
-    traceback.print_stack(limit=8)
-    return _original_Image(data, *args, **kwargs)
-
-wandb.Image = debug_Image
+# _original_Image = wandb.Image
+#
+# def debug_Image(data, *args, **kwargs):
+#     print("\nwandb.Image called")
+#     print("Type:", type(data))
+#
+#     if isinstance(data, np.ndarray):
+#         print("Range:", data.min(), data.max())
+#         print("Shape:", data.shape)
+#         print("Dtype:", data.dtype)
+#
+#     traceback.print_stack(limit=8)
+#     return _original_Image(data, *args, **kwargs)
+#
+# wandb.Image = debug_Image
+#
+#
+# class TracebackHandler(logging.Handler):
+#     def emit(self, record):
+#         if "Clipping input data to the valid range for imshow" in record.getMessage():
+#             print("\nMatplotlib image clipping traceback:")
+#             traceback.print_stack()
+#
+#
+# logging.getLogger("matplotlib.image").addHandler(TracebackHandler())
 
 import glob
 import re
@@ -51,7 +65,7 @@ from torchvision.utils import make_grid
 import models
 from utils import CrossModalEvalForwardMode
 from objectives import compute_idmvae_loss
-from utils import Logger, save_model_light
+from utils import Logger, save_model_light, get_mean
 from utils import unpack_data_CUBcluster8, get_test_CUBcluster8_samples
 import textwrap
 import torchvision.transforms as transforms
@@ -228,6 +242,12 @@ parser.add_argument('--enable_test_epoch', action='store_true', default=False,
                     help='Enable test epoch for evaluation.')
 parser.add_argument('--enable_unconditional_generation', action='store_true', default=False,
                     help='Enable unconditional generation during testing.')
+parser.add_argument('--enable_img2text', action='store_true', default=False,
+                    help='Generate image->text captions over the selected test-time split.')
+parser.add_argument('--img2text_use_diffusion_prior', action='store_true', default=False,
+                    help='Use the learned IDMVAE diffusion prior for p(w_text) instead of the simple prior.')
+parser.add_argument('--enable_text2text_mean',action='store_true',default=False,
+                    help='Evaluate Text->Text reconstruction using the posterior mean.')
 parser.add_argument('--enable_latent_classification', action='store_true', default=False,
                     help='Enable latent classification during testing.')
 parser.add_argument('--use_mean_for_latent_clf', action='store_true', default=False,
@@ -242,6 +262,9 @@ parser.add_argument('--save_eval_images_root', type=str, default='',
 
 # args
 args = parser.parse_args()
+
+
+
 
 # Validate arguments
 if not args.print_params_only:
@@ -285,8 +308,8 @@ args.cuda = not args.no_cuda and torch.cuda.is_available()
 device = torch.device("cuda" if args.cuda else "cpu")
 print(device)
 
-modelC = getattr(models, 'IDMVAE_CUB_Image_Captions')
-model = modelC(3958, args).to(device)
+modelC = getattr(models, 'IDMVAE_UCF_Image_Captions')
+model = modelC(2505, args).to(device)
 
 
 
@@ -314,7 +337,8 @@ if not args.experiment:
 
 # Set up run path
 if args.resume and args.resume_from_CPt_runId:
-    runId = args.CPt_runId
+    runId = args.CPt_runId.split('/')[2]
+
 elif args.develop:
     runId = (
         f"Dev_{args.note}_K{args.K}_B{args.batch_size}_{args.priorposterior}_{args.likelihood}_b{args.beta}_"
@@ -334,10 +358,15 @@ if args.test_only:
     experiment_dir = Path(os.path.join(args.outputdir, args.experiment, "checkpoints", "CP_test"))
 elif args.develop:
     experiment_dir = Path(os.path.join(args.outputdir, args.experiment, "checkpoints", "Dev"))
+elif args.resume_from_CPt_runId:
+    experiment_dir = Path(os.path.join(args.outputdir, args.CPt_runId.split('/')[0],args.CPt_runId.split('/')[1]))
 else:
     experiment_dir = Path(os.path.join(args.outputdir, args.experiment, "checkpoints"))
 # experiment_dir.mkdir(parents=True, exist_ok=True)
 runPath = os.path.join(str(experiment_dir), runId)
+
+
+
 
 # Optimizer
 print("Using Adam optimizer.")
@@ -347,7 +376,10 @@ optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr
 start_epoch = 1
 experiment_dir.mkdir(parents=True, exist_ok=True)
 
-if args.resume:
+if args.resume :
+
+
+
     if not os.path.exists(runPath):
         print(f"Error: Run path '{runPath}' does not exist for resuming. Exiting.")
         sys.exit(1)
@@ -472,10 +504,11 @@ if args.dataset == 'UCF':
 
     base_dir = args.datadir  # UCF
 
-    augmentation_transform = transforms.Compose([
-        # Randomly flip horizontally with a 50% probability
-        transforms.RandomHorizontalFlip(p=0.5),
-    ])
+    # augmentation_transform = transforms.Compose([
+    #     # Randomly flip horizontally with a 50% probability
+    #     transforms.RandomHorizontalFlip(p=0.5),
+    # ])
+    augmentation_transform=None
 
     # Temporary. If this is true, loaded image tensors should be of size [4, 32, 32]. If false, [3, 64, 64].
     use_pretrain_feats = args.use_pretrain_feats
@@ -505,9 +538,9 @@ if args.dataset == 'UCF':
         # Reuse the same object for evaluation/visualization.
         pretrained_vae = vae
 
-    else:
-        # Pretrained VAE for image feature extraction
-        pretrained_vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
+    # else:
+    #     # Pretrained VAE for image feature extraction
+    #     pretrained_vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
 
 
     # Load image, caption, and label data
@@ -666,6 +699,9 @@ def train(epoch):
     for i, dataT in enumerate(train_loader):
         # CUBICC:
         data, label = unpack_data_CUBcluster8(dataT, device=device)
+
+
+
         optimizer.zero_grad()
 
         bs = data[0].size(0)
@@ -690,6 +726,409 @@ def train(epoch):
     epoch_loss = b_loss / len(train_loader.dataset)
     wandb.log({"Loss/train": epoch_loss}, step=epoch)
     print('====> Epoch: {:03d} Train loss: {:.4f}'.format(epoch, epoch_loss))
+
+
+def evaluate_img2text(epoch):
+    """
+    Generate captions from images using:
+
+        q(z_img | x_img) + p(w_text)
+                    ↓
+              text decoder
+
+    No latent pre-generation and no DiT are involved.
+    """
+
+    print(f"--- Evaluating Image -> Text for Epoch {epoch} ---")
+
+    model.eval()
+
+    img_vae = model.vaes[0]
+    text_vae = model.vaes[1]
+
+    dataset = test_time_dataset
+    loader = test_time_loader
+
+    refs = {}
+    gens = {}
+
+    special_tokens = {
+        dataset.pad_token,
+        dataset.eos_token,
+    }
+
+    sample_counter = 0
+
+    with torch.no_grad():
+
+        for dataT in loader:
+
+            # Same unpacking used by train() and test().
+            data, _ = unpack_data_CUBcluster8(
+                dataT,
+                device=device
+            )
+
+            images = data[0]
+            captions = data[1]
+
+            batch_size = images.size(0)
+
+            # --------------------------------------------------
+            # 1. Encode image through the image modality VAE
+            # --------------------------------------------------
+            _, _, img_us = img_vae(
+                images,
+                K=1
+            )
+
+            # img_us shape:
+            # [K=1, B, latent_dim_w + latent_dim_z]
+
+            _, latents_z_img = torch.split(
+                img_us,
+                [
+                    model.params.latent_dim_w,
+                    model.params.latent_dim_z,
+                ],
+                dim=-1
+            )
+
+            # --------------------------------------------------
+            # 2. Obtain text-private w from its prior
+            # --------------------------------------------------
+            if args.img2text_use_diffusion_prior:
+                p_w_text = model.pws_diffusion[1]
+            else:
+                p_w_text = model.get_simple_prior_w(
+                    view=1,
+                    aux=False
+                )
+
+            latents_w_text = p_w_text.rsample(
+                torch.Size([
+                    img_us.size(0),
+                    img_us.size(1),
+                ])
+            ).squeeze(2)
+
+            # --------------------------------------------------
+            # 3. Combine:
+            #
+            #    w_text ~ p(w_text)
+            #    z_img  ~ q(z_img | image)
+            # --------------------------------------------------
+            latents_txt = torch.cat(
+                (
+                    latents_w_text,
+                    latents_z_img
+                ),
+                dim=-1
+            )
+
+            # --------------------------------------------------
+            # 4. Decode into text
+            # --------------------------------------------------
+            px_txt = text_vae.px_u(
+                *text_vae.dec(latents_txt)
+            )
+
+            generated = (
+                get_mean(px_txt)
+                .squeeze(0)
+                .cpu()
+            )
+
+            captions_cpu = captions.cpu()
+
+            # --------------------------------------------------
+            # 5. Convert one-hot/probabilities back to words
+            # --------------------------------------------------
+            for i in range(batch_size):
+
+                sample_counter += 1
+                key = f"image_{sample_counter}"
+
+                # ---------- Reference caption ----------
+                ref_words = []
+
+                ref_indices = torch.argmax(
+                    captions_cpu[i],
+                    dim=-1
+                ).numpy()
+
+                for idx in ref_indices:
+                    token = dataset.i2w.get(
+                        str(int(idx)),
+                        '<unk>'
+                    )
+
+                    if token == dataset.eos_token:
+                        break
+
+                    if token != dataset.pad_token:
+                        ref_words.append(token)
+
+                # ---------- Generated caption ----------
+                gen_words = []
+
+                gen_indices = torch.argmax(
+                    generated[i],
+                    dim=-1
+                ).numpy()
+
+                for idx in gen_indices:
+                    token = dataset.i2w.get(
+                        str(int(idx)),
+                        '<unk>'
+                    )
+
+                    if token == dataset.eos_token:
+                        break
+
+                    if token != dataset.pad_token:
+                        gen_words.append(token)
+
+                refs[key] = " ".join(ref_words)
+                gens[key] = " ".join(gen_words)
+
+    # ------------------------------------------------------
+    # Save results
+    # ------------------------------------------------------
+    img2text_dir = os.path.join(
+        runPath,
+        f"img2text_epoch_{epoch}"
+    )
+
+    os.makedirs(
+        img2text_dir,
+        exist_ok=True
+    )
+
+    refs_path = os.path.join(
+        img2text_dir,
+        "refs_img2text_qzpw.json"
+    )
+
+    gens_path = os.path.join(
+        img2text_dir,
+        "gens_img2text_qzpw.json"
+    )
+
+    with open(refs_path, "w") as f:
+        json.dump(
+            refs,
+            f,
+            indent=4,
+            ensure_ascii=False
+        )
+
+    with open(gens_path, "w") as f:
+        json.dump(
+            gens,
+            f,
+            indent=4,
+            ensure_ascii=False
+        )
+
+    print(
+        f"Generated {len(gens)} image->text captions."
+    )
+
+    print(
+        f"References saved to: {refs_path}"
+    )
+
+    print(
+        f"Generations saved to: {gens_path}"
+    )
+
+def evaluate_text2text_mean(epoch):
+    """
+    Text -> Text reconstruction using the posterior mean.
+
+    caption
+       ↓
+    q(u_text | caption)
+       ↓
+    mean(q)
+       ↓
+    text decoder
+       ↓
+    reconstructed caption
+
+    This is deterministic: there is no posterior sampling.
+    """
+
+    print(f"--- Evaluating Text -> Text MEAN for Epoch {epoch} ---")
+
+    model.eval()
+
+    text_vae = model.vaes[1]
+    dataset = test_time_dataset
+    loader = test_time_loader
+
+    refs = {}
+    gens = {}
+
+    sample_counter = 0
+
+    with torch.no_grad():
+
+        for dataT in loader:
+
+            # Same preprocessing used by train() and test()
+            data, _ = unpack_data_CUBcluster8(
+                dataT,
+                device=device
+            )
+
+            captions = data[1]
+
+            # ---------------------------------------------
+            # 1. Encode ground-truth caption
+            # ---------------------------------------------
+            qu_params = text_vae.enc(captions)
+
+            # q(u_text | caption)
+            qu_text = text_vae.qu_x(*qu_params)
+
+            # ---------------------------------------------
+            # 2. Use posterior MEAN instead of rsample()
+            #
+            # Expected:
+            # [B, latent_dim_w + latent_dim_z]
+            #
+            # Add K dimension:
+            # [1, B, latent_dim]
+            # ---------------------------------------------
+            latents_mean = qu_text.mean.unsqueeze(0)
+
+            # ---------------------------------------------
+            # 3. Decode the deterministic latent
+            # ---------------------------------------------
+            px_txt = text_vae.px_u(
+                *text_vae.dec(latents_mean)
+            )
+
+            reconstructed = (
+                get_mean(px_txt)
+                .squeeze(0)
+                .cpu()
+            )
+
+            captions_cpu = captions.cpu()
+
+            batch_size = captions_cpu.size(0)
+
+            # ---------------------------------------------
+            # 4. Convert tensors back into words
+            # ---------------------------------------------
+            for i in range(batch_size):
+
+                sample_counter += 1
+                key = f"text_{sample_counter}"
+
+                # ======================
+                # Ground truth caption
+                # ======================
+                ref_indices = torch.argmax(
+                    captions_cpu[i],
+                    dim=-1
+                ).numpy()
+
+                ref_words = []
+
+                for idx in ref_indices:
+
+                    token = dataset.i2w.get(
+                        str(int(idx)),
+                        '<unk>'
+                    )
+
+                    if token == dataset.eos_token:
+                        break
+
+                    if token != dataset.pad_token:
+                        ref_words.append(token)
+
+                # ======================
+                # Reconstructed caption
+                # ======================
+                gen_indices = torch.argmax(
+                    reconstructed[i],
+                    dim=-1
+                ).numpy()
+
+                gen_words = []
+
+                for idx in gen_indices:
+
+                    token = dataset.i2w.get(
+                        str(int(idx)),
+                        '<unk>'
+                    )
+
+                    if token == dataset.eos_token:
+                        break
+
+                    if token != dataset.pad_token:
+                        gen_words.append(token)
+
+                refs[key] = " ".join(ref_words)
+                gens[key] = " ".join(gen_words)
+
+    # ---------------------------------------------
+    # Save JSON files
+    # ---------------------------------------------
+    text2text_dir = os.path.join(
+        runPath,
+        f"text2text_mean_epoch_{epoch}"
+    )
+
+    os.makedirs(
+        text2text_dir,
+        exist_ok=True
+    )
+
+    refs_path = os.path.join(
+        text2text_dir,
+        "refs_text2text_mean.json"
+    )
+
+    gens_path = os.path.join(
+        text2text_dir,
+        "gens_text2text_mean.json"
+    )
+
+    with open(refs_path, "w") as f:
+        json.dump(
+            refs,
+            f,
+            indent=4,
+            ensure_ascii=False
+        )
+
+    with open(gens_path, "w") as f:
+        json.dump(
+            gens,
+            f,
+            indent=4,
+            ensure_ascii=False
+        )
+
+    print(
+        f"Reconstructed {len(gens)} captions."
+    )
+
+    print(
+        f"References saved to: {refs_path}"
+    )
+
+    print(
+        f"Reconstructions saved to: {gens_path}"
+    )
+
 
 
 def test(epoch):
@@ -1325,10 +1764,24 @@ def run_evaluation(epoch):
     """
     Runs the full evaluation suite for CUB.
     """
+
+    # NEW
+    if args.enable_text2text_mean:
+        evaluate_text2text_mean(epoch)
+        return
+
+    if args.enable_img2text:
+        evaluate_img2text(epoch)
+        return
+
+
+
     print(f"--- Running Full Evaluation for Epoch {epoch} ---")
     if args.enable_test_epoch:
         test(epoch)
         _cub_test_epoch_qualitative_visuals(epoch)
+
+
 
     if args.enable_unconditional_generation:
         gen_samples = cub_generate_unconditional(model, N=100, coherence_calculation=False, fid_calculation=False)
@@ -1770,7 +2223,212 @@ def run_evaluation(epoch):
         torch.cuda.empty_cache()
 
 
+@torch.inference_mode()
+def evaluate_wz_ablation(
+    epoch,
+):
+    model.eval()
 
+    loader=test_cluster_loader
+    dataset=test_cluster_dataset
+
+    output_dir = os.path.join(
+        runPath,
+        "wz_ablation"
+    )
+
+
+
+    W = model.params.latent_dim_w
+    Z = model.params.latent_dim_z
+
+    text_vae = model.vaes[1]
+
+    # Standard Gaussian text-private prior.
+    p_w_text = model.get_simple_prior_w(
+        view=1,
+        aux=False
+    )
+
+    generations = {
+        "A_zimg_wprior": {},
+        "B_ztxt_wprior": {},
+        "C_zimg_wtxt": {},
+        "D_ztxt_wtxt": {},
+    }
+
+    special_tokens = {
+        dataset.pad_token,
+        dataset.eos_token,
+    }
+
+    def caption_tensor_to_string(cap_tensor):
+        """
+        cap_tensor: [L, vocab_size]
+        Uses the same argmax decoding as your current evaluation.
+        """
+        indices = torch.argmax(
+            cap_tensor,
+            dim=-1
+        ).cpu()
+
+        words = []
+
+        for idx in indices:
+            idx = int(idx)
+
+            # cub.vocab loaded from JSON may have string keys
+            if str(idx) in dataset.i2w:
+                token = dataset.i2w[str(idx)]
+            else:
+                token = dataset.i2w[idx]
+
+            if token not in special_tokens:
+                words.append(token)
+
+        return " ".join(words)
+
+    def decode_text(w, z):
+        """
+        w: [1, B, W]
+        z: [1, B, Z]
+        returns: [B, L, vocab_size]
+        """
+        u = torch.cat(
+            (w, z),
+            dim=-1
+        )
+
+        px_txt = text_vae.px_u(
+            *text_vae.dec(u)
+        )
+
+        return (
+            utils.get_mean(px_txt)
+            .squeeze(0)
+            .cpu()
+        )
+
+    counter = 1
+
+    for batch in loader:
+
+        # UCFDataset returns:
+        # ((image, caption), labels)
+        data, _ = batch
+        img, caption = data
+
+        img = img.to(device)
+        caption = caption.to(device)
+
+        B = img.size(0)
+
+        # --------------------------------------------------
+        # 1. Get deterministic posterior MEANS
+        # --------------------------------------------------
+
+        mu_img, _ = model.encoders[0](img)
+        mu_txt, _ = model.encoders[1](caption)
+
+        # [B, W+Z] -> [B,W], [B,Z]
+        w_img, z_img = torch.split(
+            mu_img,
+            [W, Z],
+            dim=-1,
+        )
+
+        w_txt, z_txt = torch.split(
+            mu_txt,
+            [W, Z],
+            dim=-1,
+        )
+
+        # Decoder expects the K dimension:
+        # [1, B, latent_dim]
+        z_img = z_img.unsqueeze(0)
+        z_txt = z_txt.unsqueeze(0)
+        w_txt = w_txt.unsqueeze(0)
+
+        # --------------------------------------------------
+        # 2. ONE text-prior draw shared by experiments A/B
+        # --------------------------------------------------
+
+        w_prior = p_w_text.rsample(
+            torch.Size([1, B])
+        ).squeeze(2)
+
+        # Expected:
+        # w_prior -> [1,B,W]
+
+        # --------------------------------------------------
+        # 3. Four controlled combinations
+        # --------------------------------------------------
+
+        recon_A = decode_text(
+            w_prior,
+            z_img,
+        )
+
+        recon_B = decode_text(
+            w_prior,
+            z_txt,
+        )
+
+        recon_C = decode_text(
+            w_txt,
+            z_img,
+        )
+
+        recon_D = decode_text(
+            w_txt,
+            z_txt,
+        )
+
+        batch_outputs = {
+            "A_zimg_wprior": recon_A,
+            "B_ztxt_wprior": recon_B,
+            "C_zimg_wtxt": recon_C,
+            "D_ztxt_wtxt": recon_D,
+        }
+
+        # --------------------------------------------------
+        # 4. Convert tensors to text
+        # --------------------------------------------------
+
+        for b in range(B):
+            key = f"image_{counter + b}"
+
+            for experiment_name, output in batch_outputs.items():
+                generations[experiment_name][key] = (
+                    caption_tensor_to_string(output[b])
+                )
+
+        counter += B
+
+    # --------------------------------------------------
+    # 5. Save four JSON files
+    # --------------------------------------------------
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    for experiment_name, result in generations.items():
+
+        path = os.path.join(
+            output_dir,
+            f"{experiment_name}_epoch{epoch}.json"
+        )
+
+        with open(path, "w") as f:
+            json.dump(
+                result,
+                f,
+                indent=4,
+            )
+
+        print(
+            f"Saved {experiment_name}: "
+            f"{len(result)} captions -> {path}"
+        )
 
 
 if __name__ == '__main__':
@@ -1792,13 +2450,21 @@ if __name__ == '__main__':
         model.load_state_dict(torch.load(checkpoint_to_load, map_location=device), strict=False)
         _log_param_counts(f"test_only_epoch_{epoch_to_test}")
 
+        evaluate_wz_ablation(
+            epoch=150,
+        )
+
+        print(ent)
+
+
         run_evaluation(epoch_to_test)
+
 
         print("--- Test-Only Mode Finished ---")
 
     else:
         # --- Training Mode ---
-        test_epoch_freq = 1
+        test_epoch_freq = 10
 
 
         def _collect_checkpoints(prefix):

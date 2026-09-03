@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import Dict, Tuple
 from diffusers.models import AutoencoderKL # pip install diffusers transformers accelerate
 
+MIN_WORD_FREQ = 1
 
 def cub_caption_vocab_path(datadir, vocab_file=None):
     """
@@ -27,7 +28,7 @@ def cub_caption_vocab_path(datadir, vocab_file=None):
     return os.path.join(datadir, "cub.vocab")
 
 
-def build_cub_caption_vocab_file(captions, vocab_path: str, *, min_occ: int = 1) -> None:
+def build_cub_caption_vocab_file(captions, vocab_path: str, *, min_occ=None) -> None:
     """
     Build and write cub.vocab from captions.pt content (list of per-image caption lists).
 
@@ -65,12 +66,15 @@ def build_cub_caption_vocab_file(captions, vocab_path: str, *, min_occ: int = 1)
         json.dump({"w2i": w2i, "i2w": i2w}, f)
 
 
-def ensure_cub_caption_vocab(datadir, vocab_file=None, min_occ=1, captions=None):
+def ensure_cub_caption_vocab(datadir, vocab_file=None, min_occ=None, captions=None):
     """
     Ensure cub.vocab exists. If missing, build from ``captions`` or from ``captions.pt`` in datadir.
 
     Raises FileNotFoundError if there is no vocab and no way to load captions.
     """
+    if min_occ is None:
+        min_occ = MIN_WORD_FREQ
+
     path = cub_caption_vocab_path(datadir, vocab_file)
     if os.path.isfile(path):
         return path
@@ -82,12 +86,37 @@ def ensure_cub_caption_vocab(datadir, vocab_file=None, min_occ=1, captions=None)
                 "Add cub.vocab or place captions.pt in datadir."
             )
         captions = torch.load(captions_path)
-    build_cub_caption_vocab_file(captions, path, min_occ=min_occ)
+
+    # ---------------------------------------------------------
+    # Build vocabulary ONLY from the training split
+    # ---------------------------------------------------------
+    train_idx_path = os.path.join(
+        datadir,
+        "train_idx.npy"
+    )
+
+    if not os.path.isfile(train_idx_path):
+        raise FileNotFoundError(
+            f"Could not find training indices: {train_idx_path}"
+        )
+
+    train_indices = np.load(train_idx_path)
+
+    train_captions = [
+        captions[int(img_idx)]
+        for img_idx in train_indices
+    ]
+
+    build_cub_caption_vocab_file(train_captions, path, min_occ=min_occ)
     return path
 
 
-def load_cub_caption_vocab(datadir, vocab_file=None, min_occ=1, captions=None):
+def load_cub_caption_vocab(datadir, vocab_file=None, min_occ=None, captions=None):
     """Load full vocab JSON; creates cub.vocab when missing (see ``ensure_cub_caption_vocab``)."""
+
+    if min_occ is None:
+        min_occ = MIN_WORD_FREQ
+
     ensure_cub_caption_vocab(datadir, vocab_file, min_occ=min_occ, captions=captions)
     path = cub_caption_vocab_path(datadir, vocab_file)
     with open(path, "r") as vf:
@@ -95,8 +124,12 @@ def load_cub_caption_vocab(datadir, vocab_file=None, min_occ=1, captions=None):
 
 
 @lru_cache(maxsize=32)
-def load_cub_i2w(datadir, vocab_file=None, min_occ=1):
+def load_cub_i2w(datadir, vocab_file=None, min_occ=None):
     """Index-to-word mapping for decoding one-hot caption rows (cached by datadir / options)."""
+
+    if min_occ is None:
+        min_occ = MIN_WORD_FREQ
+
     return load_cub_caption_vocab(datadir, vocab_file, min_occ=min_occ)["i2w"]
 
 
@@ -155,13 +188,13 @@ class UCFDataset(Dataset):
             self.image_ids= torch.load(os.path.join(self.datadir, 'image_ids.pt'), weights_only=False, map_location="cpu") \
                 if os.path.exists(os.path.join(self.datadir, 'image_ids.pt')) else None
 
-
-
         # load vocab (same JSON as CUBSentences / eval text rendering)
         vocab = load_cub_caption_vocab(datadir)
         self.w2i = vocab['w2i']
         self.i2w = vocab['i2w']  # Make index-to-word mapping available, e.g., for WandB
         self.vocab_size = len(self.w2i)
+        print('vocab size: ', self.vocab_size)
+
 
 
 
@@ -224,10 +257,18 @@ class UCFDataset(Dataset):
         if self.use_pretrain_feats:
             img_for_vae = img.mul(2).sub(1)  # map [0,1] -> [-1,1] (https://github.com/facebookresearch/DiT/blob/main/train.py#L162)
             with torch.no_grad():
+                vae_dtype = next(self.vae.parameters()).dtype
+                img_for_vae = img_for_vae.to(
+                    device=self.device,
+                    dtype=vae_dtype,
+                )
+
                 # import pdb; pdb.set_trace()
                 # Configuration for training latent diffusion, output has 32x32 resolution and 4 channels.
                 img = self.vae.encode(img_for_vae.unsqueeze(0).to(self.device)).latent_dist.sample().mul_(0.18215).squeeze(0) # [1,4,32,32] -> [4,32,32]
                 # import pdb; pdb.set_trace()
+
+
         # raw caption string
         raw = self.captions[img_idx][cap_idx]
         # tokenize + truncate or pad
@@ -323,7 +364,7 @@ class CUBSentences(Dataset):
         super().__init__()
         self.split = split
         self.max_sequence_length = kwargs.get("max_sequence_length", 32)
-        self.min_occ = kwargs.get("min_occ", 1)
+        self.min_occ = kwargs.get("min_occ",     MIN_WORD_FREQ)
         self.transform = transform
         self.one_hot = one_hot
         self.transpose = transpose
@@ -419,11 +460,11 @@ class CUBSentences(Dataset):
         return self.i2w
 
 
-class UCF_pregen_4x32x32_7x(UCFDataset):
+class UCF_pregen_4x32x32_10x(UCFDataset):
     """
-    Dataset variant for 7x latents aligned with captions (one latent per caption per image):
-        - inputs_4x32x32_7x.pt   (shape [N, num_caps, 4, 32, 32])
-        - outputs_4x32x32_7x.pt  (shape [N, num_caps, 4, 32, 32])
+    Dataset variant for 10x latents aligned with captions (one latent per caption per image):
+        - inputs_4x32x32_10x.pt   (shape [N, num_caps, 4, 32, 32])
+        - outputs_4x32x32_10x.pt  (shape [N, num_caps, 4, 32, 32])
 
     The second dimension contains seven stochastic latent slots.
     Caption cap_idx is paired with latent slot cap_idx. Images with
@@ -431,7 +472,7 @@ class UCF_pregen_4x32x32_7x(UCFDataset):
     """
     def __init__(self, datadir, split='train', cluster_only=False,
                  transform=None, latent_subdir=None, use_pretrain_feats=False, args=None,
-                 inputs_name="inputs_4x32x32_7x.pt", outputs_name="outputs_4x32x32_7x.pt"):
+                 inputs_name="inputs_4x32x32_10x.pt", outputs_name="outputs_4x32x32_10x.pt"):
         super().__init__(
             datadir=datadir,
             split=split,
@@ -503,6 +544,69 @@ class UCF_pregen_4x32x32_7x(UCFDataset):
         datas = (img, cap_tensor, latent_input, latent_output)
         return datas, labels
 
+
+class UCF_pregen_4x32x32_1x(UCFDataset):
+    """
+    Dataset variant for 1x latents aligned with captions (one latent per caption per image):
+        - inputs_4x32x32_1x.pt   (shape [N, num_caps, 4, 32, 32])
+        - outputs_4x32x32_1x.pt  (shape [N, num_caps, 4, 32, 32])
+
+    The second dimension matches the number of captions per image (typically 1).
+    """
+    def __init__(self, datadir, split='train', cluster_only=False,
+                 transform=None, latent_subdir=None, use_pretrain_feats=False, args=None,
+                 inputs_name="inputs_4x32x32.pt", outputs_name="outputs_4x32x32.pt"):
+        super().__init__(
+            datadir=datadir,
+            split=split,
+            cluster_only=cluster_only,
+            transform=transform,
+            use_pretrain_feats=use_pretrain_feats,
+            args=args,
+        )
+        if latent_subdir:
+            latent_dir = latent_subdir if os.path.isabs(latent_subdir) else os.path.join(datadir, latent_subdir)
+        else:
+            latent_dir = datadir
+        self.latent_inputs = torch.load(os.path.join(latent_dir, inputs_name))
+        self.latent_outputs = torch.load(os.path.join(latent_dir, outputs_name))
+
+        if self.latent_inputs.dim()==4:
+            self.latent_inputs = self.latent_inputs.unsqueeze(1)
+
+
+        if self.latent_outputs.dim()==4:
+            self.latent_outputs = self.latent_outputs.unsqueeze(1)
+
+
+
+
+        num_images = self.images.shape[0]
+        if self.latent_inputs.shape[0] != num_images or self.latent_outputs.shape[0] != num_images:
+            raise ValueError(
+                f"Latent tensors do not match dataset size: "
+                f"N_images={num_images}, "
+                f"N_inputs={self.latent_inputs.shape[0]}, "
+                f"N_outputs={self.latent_outputs.shape[0]}"
+            )
+
+        caps_per_image = len(self.captions[0]) if isinstance(self.captions, list) and len(self.captions) > 0 else None
+        if caps_per_image and (self.latent_inputs.shape[1] != caps_per_image or self.latent_outputs.shape[1] != caps_per_image):
+            raise ValueError(
+                f"Latent tensors do not match captions per image: "
+                f"caps_per_image={caps_per_image}, "
+                f"N_inputs_caps={self.latent_inputs.shape[1]}, "
+                f"N_outputs_caps={self.latent_outputs.shape[1]}"
+            )
+
+    def __getitem__(self, idx):
+        (img, cap_tensor), labels = super().__getitem__(idx)
+        img_idx, cap_idx = self.pairs[idx]
+        latent_input = self.latent_inputs[img_idx, cap_idx]
+        latent_output = self.latent_outputs[img_idx, cap_idx]
+        datas = (img, cap_tensor, latent_input, latent_output)
+        return datas, labels
+
 LATENT_CHANNELS = 4
 LATENT_SIZE = 32
 VAE_LATENT_SCALE = 0.18215
@@ -522,18 +626,18 @@ class TensorDataset1D(Dataset):
 
 
 def parse_cub_pregen_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="CUB 256px -> 4x32x32 latent dataset generator")
+    parser = argparse.ArgumentParser(description="UCF -> 4x32x32 latent dataset generator")
     parser.add_argument("--data-dir", required=True, help="Directory containing images.pt/captions.pt/labels_*.pt")
     parser.add_argument("--model-args", required=True, help="Path to the args.json/args.rar used for training the checkpoint")
     parser.add_argument("--checkpoint", required=True, help="Checkpoint produced by save_model_light() (e.g. model_50.rar)")
     parser.add_argument("--output-dir", default=None, help="Directory to write outputs (default: same as --data-dir)")
     parser.add_argument("--inputs-name", default="inputs_4x32x32.pt", help="Filename for encoded SD-VAE latents")
     parser.add_argument("--outputs-name", default="outputs_4x32x32.pt", help="Filename for IDMVAE reconstructions")
-    parser.add_argument("--generate-1x", action="store_true", help="Also generate single-sample latents (opt-in; 7x is default)")
-    parser.add_argument("--skip-7x", action="store_true", help="Skip the default 7x latent generation")
-    parser.add_argument("--inputs-name-7x", default="inputs_4x32x32_7x.pt", help="Filename for 7x SD-VAE latents")
-    parser.add_argument("--outputs-name-7x", default="outputs_4x32x32_7x.pt", help="Filename for 7x IDMVAE reconstructions")
-    parser.add_argument("--samples-per-image", type=int, default=7, help="How many latent samples to draw per image")
+    parser.add_argument("--generate-1x", action="store_true", help="Also generate single-sample latents (opt-in; 10x is default)")
+    parser.add_argument("--skip-10x", action="store_true", help="Skip the default 10x latent generation")
+    parser.add_argument("--inputs-name-10x", default="inputs_4x32x32_10x.pt", help="Filename for 10x SD-VAE latents")
+    parser.add_argument("--outputs-name-10x", default="outputs_4x32x32_10x.pt", help="Filename for 10x IDMVAE reconstructions")
+    parser.add_argument("--samples-per-image", type=int, default=10, help="How many latent samples to draw per image")
     parser.add_argument("--batch-size", type=int, default=128, help="Batch size for encoding/decoding")
     parser.add_argument("--num-workers", type=int, default=32, help="Number of DataLoader workers")
     parser.add_argument("--device", default=None, help="PyTorch device (e.g. cuda, cuda:1, cpu). Defaults to CUDA when available.")
@@ -584,12 +688,21 @@ def prepare_model_args(train_args: SimpleNamespace,
     return train_args
 
 
+# def normalize_images(images: torch.Tensor) -> torch.Tensor:
+#     if images.dtype != torch.float32:
+#         images = images.float()
+#     if images.max() > 1.0:
+#         images = images / 255.0
+#     return images.clamp(0.0, 1.0).contiguous()
+
+
 def normalize_images(images: torch.Tensor) -> torch.Tensor:
-    if images.dtype != torch.float32:
-        images = images.float()
-    if images.max() > 1.0:
-        images = images / 255.0
-    return images.clamp(0.0, 1.0).contiguous()
+    if images.dtype not in (torch.float16, torch.float32):
+        raise TypeError(
+            f"Expected float16 or float32 images, got {images.dtype}"
+        )
+
+    return images
 
 
 def encode_images_to_latents(dataloader: DataLoader,
@@ -597,6 +710,8 @@ def encode_images_to_latents(dataloader: DataLoader,
                              resn_vae,
                              device: torch.device,
                              total_samples: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    sd_vae_dtype = next(sd_vae.parameters()).dtype
+
     inputs = torch.empty((total_samples, LATENT_CHANNELS, LATENT_SIZE, LATENT_SIZE), dtype=torch.float32)
     outputs = torch.empty_like(inputs)
 
@@ -608,9 +723,10 @@ def encode_images_to_latents(dataloader: DataLoader,
         p.requires_grad = False
 
     offset = 0
+
     with torch.inference_mode():
         for batch in tqdm(dataloader, desc="Encoding images + reconstructing latents"):
-            imgs = batch.to(device)
+            imgs = batch.to(device, dtype=sd_vae_dtype, non_blocking=True)
             imgs = imgs.mul(2).sub(1) # Normalize images [0, 1] to [-1, 1]
             latents = sd_vae.encode(imgs).latent_dist.sample() * VAE_LATENT_SCALE
 
@@ -629,49 +745,90 @@ def encode_images_to_latents(dataloader: DataLoader,
     return inputs, outputs
 
 
-def encode_images_to_latents_7x(dataloader: DataLoader,
-                                 sd_vae,
-                                 resn_vae,
-                                 device: torch.device,
-                                 total_samples: int,
-                                 samples_per_image: int = 7) -> Tuple[torch.Tensor, torch.Tensor]:
-    inputs: list = [None] * total_samples
-    outputs: list = [None] * total_samples
+def encode_images_to_latents_10x(
+    dataloader: DataLoader,
+    sd_vae,
+    resn_vae,
+    device: torch.device,
+    total_samples: int,
+    samples_per_image: int = 10,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+
+    sd_vae_dtype = next(sd_vae.parameters()).dtype
+
+
+    inputs = torch.empty(
+        (
+            total_samples,
+            samples_per_image,
+            LATENT_CHANNELS,
+            LATENT_SIZE,
+            LATENT_SIZE,
+        ),
+        dtype=torch.float32,
+        device="cpu",
+    )
+
+    outputs = torch.empty_like(inputs)
 
     sd_vae.eval()
     resn_vae.eval()
+
     for p in sd_vae.parameters():
-        p.requires_grad = False
+        p.requires_grad_(False)
+
     for p in resn_vae.parameters():
-        p.requires_grad = False
+        p.requires_grad_(False)
 
     offset = 0
+
     with torch.inference_mode():
-        for batch in tqdm(dataloader, desc="Encoding images + reconstructing latents (7x)"):
-            imgs = batch.to(device).mul(2).sub(1)
+        for batch in tqdm(
+            dataloader,
+            desc=f"Encoding images + reconstructing latents ({samples_per_image}x)",
+        ):
+            imgs = batch.to(device, dtype=sd_vae_dtype, non_blocking=True)
+            imgs = imgs.mul(2).sub(1)
+
             batch_size = imgs.size(0)
+
             for local_idx in range(batch_size):
                 img_idx = offset + local_idx
-                latent_dist = sd_vae.encode(imgs[local_idx : local_idx + 1]).latent_dist
 
-                latents_per_img = []
-                recons_per_img = []
-                for _ in range(samples_per_image):
-                    latents = latent_dist.sample() * VAE_LATENT_SCALE
+                latent_dist = sd_vae.encode(
+                    imgs[local_idx : local_idx + 1]
+                ).latent_dist
+
+                for sample_idx in range(samples_per_image):
+                    latents = latent_dist.sample()
+                    latents.mul_(VAE_LATENT_SCALE)
+
                     recon = resn_vae.reconstruct(latents)
+
                     if recon.dim() == 5 and recon.size(0) == 1:
                         recon = recon.squeeze(0)
-                    latents_per_img.append(latents.squeeze(0).cpu())
-                    recons_per_img.append(recon.squeeze(0).cpu())
 
-                inputs[img_idx] = torch.stack(latents_per_img, dim=0)
-                outputs[img_idx] = torch.stack(recons_per_img, dim=0)
+                    inputs[img_idx, sample_idx].copy_(
+                        latents.squeeze(0),
+                        non_blocking=False,
+                    )
+
+                    outputs[img_idx, sample_idx].copy_(
+                        recon.squeeze(0),
+                        non_blocking=False,
+                    )
+
             offset += batch_size
 
-    if any(x is None for x in inputs) or any(x is None for x in outputs):
-        raise RuntimeError(f"Processed {offset} samples but expected {total_samples}")
+            # Release the large GPU batch reference promptly.
+            del imgs
 
-    return torch.stack(inputs, dim=0), torch.stack(outputs, dim=0)
+    if offset != total_samples:
+        raise RuntimeError(
+            f"Processed {offset} samples but expected {total_samples}"
+        )
+
+    return inputs, outputs
 
 
 def build_caption_tensor_for_all(captions, w2i, max_len=32, cap_idx=0):
@@ -758,9 +915,12 @@ def main_pregen_cub() -> None:
         pass
 
     images = torch.load(os.path.join(args.data_dir, "images.pt"), map_location="cpu")
+
+
+
     captions = torch.load(os.path.join(args.data_dir, "captions.pt"))
     images_tensor_full = images if torch.is_tensor(images) else torch.stack(images)
-    images_tensor_full = normalize_images(images_tensor_full)
+    #images_tensor_full = normalize_images(images_tensor_full)
 
     full_num_samples = images_tensor_full.shape[0]
     label_tensors = load_label_tensors(args.data_dir, expected_len=full_num_samples)
@@ -814,18 +974,18 @@ def main_pregen_cub() -> None:
     )
 
     generated_any = False
-    inputs_7x_path = output_dir / args.inputs_name_7x
-    outputs_7x_path = output_dir / args.outputs_name_7x
+    inputs_10x_path = output_dir / args.inputs_name_10x
+    outputs_10x_path = output_dir / args.outputs_name_10x
 
-    if not args.skip_7x:
-        print(f"Reconstructing 7x latents for {num_samples} images with {samples_per_image} samples per image...")
-        inputs_7x, outputs_7x = encode_images_to_latents_7x(
+    if not args.skip_10x:
+        print(f"Reconstructing 10x latents for {num_samples} images with {samples_per_image} samples per image...")
+        inputs_10x, outputs_10x = encode_images_to_latents_10x(
             dataloader, sd_vae, resn_vae, device, num_samples, samples_per_image=samples_per_image
         )
-        torch.save(inputs_7x, inputs_7x_path)
-        torch.save(outputs_7x, outputs_7x_path)
-        print(f"Saved 7x encoded latents to {inputs_7x_path}")
-        print(f"Saved 7x reconstructions to {outputs_7x_path}")
+        torch.save(inputs_10x, inputs_10x_path)
+        torch.save(outputs_10x, outputs_10x_path)
+        print(f"Saved 10x encoded latents to {inputs_10x_path}")
+        print(f"Saved 10x reconstructions to {outputs_10x_path}")
         generated_any = True
 
     if args.generate_1x:
@@ -840,7 +1000,7 @@ def main_pregen_cub() -> None:
         generated_any = True
 
     if not generated_any:
-        print("[WARN] No latent outputs were generated. Disable --skip-7x or enable --generate-1x.")
+        print("[WARN] No latent outputs were generated. Disable --skip-10x or enable --generate-1x.")
 
     if args.text2img_output:
         print(f"Generating text->image prior_shared latents for {num_samples} images...")

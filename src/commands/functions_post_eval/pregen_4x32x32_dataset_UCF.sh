@@ -20,12 +20,12 @@ set -euo pipefail
 # ------------------------------------------------------------------------------
 # Configuration
 # ------------------------------------------------------------------------------
-DATA_DIR="/home/chatziko/PycharmProjects/PythonProject/IDMVAE/CUB_HQ"  # cats22_256px_70_15_15_nonbbox_seed1087
-EXPERIMENT="CUBcluster8_256_baseline"
+DATA_DIR="/home/chatziko/PycharmProjects/PythonProject/IDMVAE/archive/UCA Image Dataset/processed"  # cats22_256px_70_15_15_nonbbox_seed1087
+EXPERIMENT="UCA_baseline"
 TITLE="IDMVAE"
-RUN_ID="07-21_0_gpu0_ltCL_TDeval_lw0.1_K1_B256_Normal_Laplace_b1.0_10.0_40.0_256_256_s2"
+RUN_ID="07-29_0_gpu0_ltCL_TDeval_lw0.1_K1_B64_Normal_Laplace_b1.0_10.0_40.0_256_256_s2"
 RUN_ID_key=$(echo "$RUN_ID" | cut -d'_' -f1-2)
-CKPT_EPOCH=36
+CKPT_EPOCH=15
 # MAX_SAMPLES=10  # Optional: limit number of samples for quicker testing (comment out or set to empty for all samples)
 
 # RUN_ID NOTE:
@@ -42,11 +42,11 @@ GPU_ID="${GPU_ID:-$gpuid}"
 export CUDA_VISIBLE_DEVICES="${GPU_ID}"
 
 # Optional tuning knobs
-BATCH_SIZE="${BATCH_SIZE:-1024}"  # doule check that should be same or need no as training batch size?
+BATCH_SIZE="${BATCH_SIZE:-64}"  # doule check that should be same or need no as training batch size?
 SD_VAE_VARIANT="${SD_VAE_VARIANT:-mse}"
-GENERATE_1X="${GENERATE_1X:-0}"            # set to 1 to also generate single-sample latents (IDMVAE path)
-SKIP_10X="${SKIP_10X:-0}"                  # set to 1 to skip IDMVAE 10x tensors
-SAMPLES_PER_IMAGE="${SAMPLES_PER_IMAGE:-10}"  # number of samples to draw per image for the default 10x outputs
+GENERATE_1X="${GENERATE_1X:-1}"            # set to 1 to also generate single-sample latents (IDMVAE path)
+SKIP_10X="${SKIP_10X:-1}"                  # set to 1 to skip IDMVAE 10x tensors
+SAMPLES_PER_IMAGE="${SAMPLES_PER_IMAGE:-1}"  # number of samples to draw per image for the default 10x outputs
 
 # ------------------------------------------------------------------------------
 # Derived paths
@@ -55,7 +55,7 @@ marker="_release"  #_debug
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
-DATASET_SCRIPT="${REPO_ROOT}/src/dataset_CUBcluster8.py"
+DATASET_SCRIPT="${REPO_ROOT}/src/dataset_UCF.py"
 RUN_DIR="${REPO_ROOT}/outputs/${EXPERIMENT}/checkpoints/${RUN_ID}"
 MODEL_ARGS_PATH="${RUN_DIR}/args.json"
 CHECKPOINT_PATH="${RUN_DIR}/model_${CKPT_EPOCH}.rar"
@@ -68,7 +68,7 @@ timestamp="$(date '+%Y%m%d_%H%M%S')"
 LOG_FILE="${LOG_DIR}/pregen_ep${CKPT_EPOCH}_${timestamp}.out"
 
 echo "============================================================"
-echo "Generating pre-encoded dataset for CUBcluster8 256px"
+echo "Generating pre-encoded dataset for UCF"
 echo "Experiment      : ${EXPERIMENT}"
 echo "Title           : ${TITLE}"
 echo "Run ID         : ${RUN_ID}"

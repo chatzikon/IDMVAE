@@ -7,9 +7,8 @@
 # - test: set TEST_CHECKPOINT_PATH, or CPt_RUNID + TEST_CHECKPOINT_EPOCH (path uses same EXPERIMENT as training)
 
 MODE="train"  # train, resume, test, develop, print_params — set train when not evaluating a checkpoint
-test_time_dataset_state="eval"  # eval, test
 
-CUB_ROOT="/home/chatziko/PycharmProjects/PythonProject/IDMVAE/archive/UCA Image Dataset/processed/"
+CUB_ROOT="/home/chatziko/PycharmProjects/PythonProject/IDMVAE/archive/UCA_image_dataset/processed"
 DENOISER_ROOT="/data/backed_up/shared/Data/CUB/weiran_dit_denoisers"
 CUB_TSNE_ROOT="${CUB_TSNE_ROOT:-../outputs/t_SNE}"
 
@@ -24,7 +23,7 @@ OUTPUTDIR="../outputs"
 # Test-only: set MODE=test and either TEST_CHECKPOINT_PATH (absolute recommended) or CPt_RUNID + TEST_CHECKPOINT_EPOCH.
 TEST_CHECKPOINT_EPOCH=1
 TEST_CHECKPOINT_EPOCHS=()  # Example: (10 20 30 40)
-CPt_RUNID="04-17_1_gpu1_Adam_ltCL_TDdevl_lw0.1_K1_B256_Normal_Laplace_b1.0_10.0_40.0_256_256_s2_UCF"
+CPt_RUNID="09-02_0_gpu0_ltCL_TD_lw0.1_K1_B256_Normal_Laplace_b1.0_10.0_40.0_256_256_s2"
 CPt_RUN_key=$(echo "$CPt_RUNID" | cut -d'_' -f1-2)
 CPt_NOTE="ID${CPt_RUN_key}-EP${TEST_CHECKPOINT_EPOCH}"
 CPt_BASE_PATH="../outputs/${CPt_OUTPUTDIR}/checkpoints/${CPt_RUNID}"
@@ -38,9 +37,9 @@ if [ "$MODE" = "test" ]; then
 fi
 
 # Model hyperparameters (Appendix C.2: 50 epochs; λ1=40, λ2=10, diffusion 0.1)
-BATCH=64
+BATCH=256
 K=1
-EPOCHS=50
+EPOCHS=200
 SEED=2
 NUM_WORKERS=4
 
@@ -140,6 +139,10 @@ note="_lt${GEN_AUG_TYPE}_TD${test_time_dataset_state}_lw${diff_lw}"
 RUN_NOTE="${RUN_NOTE_PREFIX}${date}_${number}_gpu${gpuid}${note}"
 tSNE_save_dir="${CUB_TSNE_ROOT}/${EXPERIMENT}/${date}_${number}_${note}"
 
+
+test_time_dataset_state="test"  # eval, test
+
+
 CMD_ARGS_BASE=(
   "python" "train_IDMVAE_UCF.py"
   "--experiment" "${EXPERIMENT}"
@@ -161,12 +164,21 @@ CMD_ARGS_BASE=(
   "--gen_aug_sampling_scheme" "${gen_aug_scheme}"
   "--gen_aug_loss_type" "${GEN_AUG_TYPE}"
   "--note" "${RUN_NOTE}"
+  "--enable_tSNE_UMAP"
   "--tSNE_save_dir" "${tSNE_save_dir}"
   "--lv_umap_n_neighbors" "${LV_N_NEIGHBORS}"
   "--lv_umap_min_dist" "${LV_MIN_DIST}"
   "--test_time_dataset_state" "${test_time_dataset_state}"
   "--num_workers" "${NUM_WORKERS}"
   "--use_pretrain_feats"
+  #"--resume"
+  #"--resume_from_CPt_runId"
+  #"--CPt_runId" "UCF_release_11_20_19/checkpoints/09-02_0_gpu0_ltCL_TD_lw0.1_K1_B256_Normal_Laplace_b1.0_10.0_40.0_256_256_s2"
+  "--test-only"
+  #"--enable_img2text"
+  #"--img2text_use_diffusion_prior"
+  #"--enable_text2text_mean"
+  "--checkpoint-path" "/home/chatziko/PycharmProjects/PythonProject/IDMVAE/outputs/UCF_release_11_20_19/checkpoints/09-02_0_gpu0_ltCL_TD_lw0.1_K1_B256_Normal_Laplace_b1.0_10.0_40.0_256_256_s2/model_150.rar"
 )
 
 if [ -n "${diff_stop_grad}" ]; then

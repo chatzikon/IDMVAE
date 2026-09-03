@@ -137,7 +137,7 @@ def load_model_light(filepath, modelC, args, device="cpu"):
         model (torch.nn.Module): The loaded model.
     """
     if args.dataset=='UCF':
-        vocab_size=788
+        vocab_size=3958
     else:
         vocab_size=1590
     model = modelC(vocab_size, args).to(
@@ -959,19 +959,23 @@ class EmbeddedDatasetWithPriors(Dataset):
                     else:
                         y = y.to(device)
 
+
                 if encoder is not None:
-                    u_given_x_mean, u_given_x_logvar = encoder(x)  # [B, W+Z]
+                    u_given_x_mean, u_given_x_logvar = encoder(x) # [B, W+Z]
 
                     if use_mean:
+                        #reps.append(u_given_x_mean.detach())
                         reps.append(u_given_x_mean.detach())
                     else:
                         reps_dist = vae.qu_x(u_given_x_mean, u_given_x_logvar)
                         u_given_x_sample = reps_dist.rsample(torch.Size([1]))
-                        reps.append(u_given_x_sample.detach())
-
+                        #reps.append(u_given_x_sample.detach())
+                        reps.append(u_given_x_sample.detach().cpu())
                 else:
-                    reps.append(x)
-                ys.append(y)
+                    #reps.append(x)
+                    reps.append(x.detach().cpu())
+                #ys.append(y)
+                ys.append(y.detach().cpu())
 
             ys = torch.cat(ys, 0)
 
@@ -1044,15 +1048,19 @@ class EmbeddedDataset_visualization: # tSNE, UMAP, PCA, etc.
                     u_given_x_mean, u_given_x_logvar = encoder(x) # [B, W+Z]
 
                     if use_mean:
+                        #reps.append(u_given_x_mean.detach())
                         reps.append(u_given_x_mean.detach())
                     else:
                         reps_dist = vae.qu_x(u_given_x_mean, u_given_x_logvar)
                         u_given_x_sample = reps_dist.rsample(torch.Size([1]))
                         u_given_x_sample = u_given_x_sample.squeeze(0)
-                        reps.append(u_given_x_sample.detach())
+                        #reps.append(u_given_x_sample.detach())
+                        reps.append(u_given_x_sample.detach().cpu())
                 else:
-                    reps.append(x)
-                ys.append(y)
+                    #reps.append(x)
+                    reps.append(x.detach().cpu())
+                #ys.append(y)
+                ys.append(y.detach().cpu())
 
             ys = torch.cat(ys, 0)
 

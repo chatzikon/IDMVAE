@@ -13,12 +13,17 @@ from tqdm import tqdm
 # Paths
 # ---------------------------------------------------------------------
 
-UCA_ROOT = Path(
-    "/home/chatziko/PycharmProjects/PythonProject/IDMVAE/"
-    "archive/UCA Image Dataset"
-)
+# UCA_ROOT = Path(
+#     "/home/chatziko/PycharmProjects/PythonProject/IDMVAE/"
+#     "archive/UCA Image Dataset"
+# )
 
-DATA_ROOT = UCA_ROOT / "UCA_Frame_data"
+UCA_ROOT = Path(
+    "/home/chatziko/PycharmProjects/PythonProject/IDMVAE/archive/UCA_image_dataset")
+
+
+#DATA_ROOT = UCA_ROOT / "UCA_Frame_data"
+DATA_ROOT = UCA_ROOT
 
 SPLIT_DIRS = {
     "train": DATA_ROOT / "train",
@@ -170,7 +175,7 @@ def load_all_records() -> dict[str, list[dict]]:
                 f"Split directory does not exist: {split_dir}"
             )
 
-        metadata_path = split_dir / "metadata.jsonl"
+        metadata_path = split_dir / "metadata_captioned.jsonl"
 
         if not metadata_path.is_file():
             raise FileNotFoundError(
@@ -268,7 +273,8 @@ def main() -> None:
     total_images = len(all_records)
     images_tensor = torch.empty(
         (total_images, 3, IMAGE_SIZE, IMAGE_SIZE),
-        dtype=torch.float32,
+        #dtype=torch.float32,
+        dtype=torch.float16,
     )
     captions: list[list[str]] = []
     category_labels: list[int] = []

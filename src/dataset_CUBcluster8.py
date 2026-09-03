@@ -465,6 +465,58 @@ class CUBcluster8_pregen_4x32x32_10x(CUBcluster8Dataset):
         datas = (img, cap_tensor, latent_input, latent_output)
         return datas, labels
 
+class UCF_pregen_4x32x32_1x(CUBcluster8Dataset):
+    """
+    Dataset variant for 10x latents aligned with captions (one latent per caption per image):
+        - inputs_4x32x32_10x.pt   (shape [N, num_caps, 4, 32, 32])
+        - outputs_4x32x32_10x.pt  (shape [N, num_caps, 4, 32, 32])
+
+    The second dimension matches the number of captions per image (typically 10).
+    """
+    def __init__(self, datadir, split='train', cluster_only=False,
+                 transform=None, latent_subdir=None, use_pretrain_feats=False, args=None,
+                 inputs_name="inputs_4x32x32_1x.pt", outputs_name="outputs_4x32x32_1x.pt"):
+        super().__init__(
+            datadir=datadir,
+            split=split,
+            cluster_only=cluster_only,
+            transform=transform,
+            use_pretrain_feats=use_pretrain_feats,
+            args=args,
+        )
+        if latent_subdir:
+            latent_dir = latent_subdir if os.path.isabs(latent_subdir) else os.path.join(datadir, latent_subdir)
+        else:
+            latent_dir = datadir
+        self.latent_inputs = torch.load(os.path.join(latent_dir, inputs_name))
+        self.latent_outputs = torch.load(os.path.join(latent_dir, outputs_name))
+
+        num_images = self.images.shape[0]
+        if self.latent_inputs.shape[0] != num_images or self.latent_outputs.shape[0] != num_images:
+            raise ValueError(
+                f"Latent tensors do not match dataset size: "
+                f"N_images={num_images}, "
+                f"N_inputs={self.latent_inputs.shape[0]}, "
+                f"N_outputs={self.latent_outputs.shape[0]}"
+            )
+
+        caps_per_image = len(self.captions[0]) if isinstance(self.captions, list) and len(self.captions) > 0 else None
+        if caps_per_image and (self.latent_inputs.shape[1] != caps_per_image or self.latent_outputs.shape[1] != caps_per_image):
+            raise ValueError(
+                f"Latent tensors do not match captions per image: "
+                f"caps_per_image={caps_per_image}, "
+                f"N_inputs_caps={self.latent_inputs.shape[1]}, "
+                f"N_outputs_caps={self.latent_outputs.shape[1]}"
+            )
+
+    def __getitem__(self, idx):
+        (img, cap_tensor), labels = super().__getitem__(idx)
+        img_idx, cap_idx = self.pairs[idx]
+        latent_input = self.latent_inputs[img_idx, cap_idx]
+        latent_output = self.latent_outputs[img_idx, cap_idx]
+        datas = (img, cap_tensor, latent_input, latent_output)
+        return datas, labels
+
 LATENT_CHANNELS = 4
 LATENT_SIZE = 32
 VAE_LATENT_SCALE = 0.18215
