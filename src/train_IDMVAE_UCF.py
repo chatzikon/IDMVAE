@@ -122,6 +122,11 @@ parser.add_argument('--use_pretrain_feats', action='store_true', default=False,
                     help='Whether to use pretrained VAE features.')
 parser.add_argument('--use_DiT_arch', action='store_true', default=False,
                     help='Whether to use DiT architecture for image encoder/decoder.')
+
+parser.add_argument('--image_encoder_arch',type=str,choices=['cnn', 'siglip'],default='cnn')
+parser.add_argument('--siglip_model_name',type=str,default='google/siglip-base-patch16-256')
+parser.add_argument('--siglip_lr',type=float, default=1e-5)
+
 parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="mse")
 parser.add_argument('--patch_size', type=int, default=2,
                     help='Patch size for DiT-based encoder/decoder, higher->faster.')
@@ -193,6 +198,7 @@ parser.add_argument('--lv_umap_min_dist', type=float, default=0.05,
 parser.add_argument('--num_workers', type=int, default=32, help='Number of workers for data loading')
 
 parser.add_argument('--cross_mi_loss_scale', type=float, default=0.0, help='Scale for cross-view MI loss')
+parser.add_argument('--z_alignment_loss_scale',type=float,default=0.0,help='Weight for paired shared posterior alignment loss')
 parser.add_argument('--gen_aug_loss_scale', type=float, default=0.0, help='Scale for generative augmentation loss')
 parser.add_argument('--gen_aug_sampling_scheme', type=str, default='posterior',
                     choices=['posterior', 'prior', 'diffusion_prior'],
@@ -262,6 +268,27 @@ parser.add_argument('--save_eval_images_root', type=str, default='',
 
 # args
 args = parser.parse_args()
+
+# ---------------------------------------------------------
+# Validate SigLIP configuration
+# ---------------------------------------------------------
+if args.image_encoder_arch == 'siglip':
+
+    if not args.use_pretrain_feats:
+        parser.error(
+            "SigLIP mode still requires --use_pretrain_feats "
+            "because the image decoder reconstructs SD-VAE latents."
+        )
+
+    if args.img_size != 32:
+        parser.error(
+            "Existing image decoder requires --img_size 32."
+        )
+
+    if args.img_channels != 4:
+        parser.error(
+            "Existing image decoder requires --img_channels 4."
+        )
 
 
 
@@ -342,14 +369,14 @@ if args.resume and args.resume_from_CPt_runId:
 elif args.develop:
     runId = (
         f"Dev_{args.note}_K{args.K}_B{args.batch_size}_{args.priorposterior}_{args.likelihood}_b{args.beta}_"
-        f"{args.gen_aug_loss_scale}_{args.cross_mi_loss_scale}_"
+        f"{args.gen_aug_loss_scale}_{args.cross_mi_loss_scale}_{args.z_alignment_loss_scale}"
         f"{args.latent_dim_w}_{args.latent_dim_z}_"
         f"s{args.seed}"
     )
 else:
     runId = (
         f"{args.note}_K{args.K}_B{args.batch_size}_{args.priorposterior}_{args.likelihood}_b{args.beta}_"
-        f"{args.gen_aug_loss_scale}_{args.cross_mi_loss_scale}_"
+        f"{args.gen_aug_loss_scale}_{args.cross_mi_loss_scale}_{args.z_alignment_loss_scale}"
         f"{args.latent_dim_w}_{args.latent_dim_z}_"
         f"s{args.seed}"
     )
@@ -370,7 +397,36 @@ runPath = os.path.join(str(experiment_dir), runId)
 
 # Optimizer
 print("Using Adam optimizer.")
-optimizer = optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=1e-3, amsgrad=True)
+if args.image_encoder_arch == "siglip":
+
+    siglip_params = []
+    other_params = []
+
+    for name, p in model.named_parameters():
+
+        if not p.requires_grad:
+            continue
+
+        if "vaes.0.enc.backbone." in name:
+            siglip_params.append(p)
+        else:
+            other_params.append(p)
+
+    optimizer = optim.Adam(        [
+            {
+                "params": siglip_params,
+                "lr": args.siglip_lr,
+            },
+            {
+                "params": other_params,
+                "lr": 1e-3,
+            },
+        ],
+        amsgrad=True,
+    )
+
+else:
+    optimizer = optim.Adam(filter(lambda p: p.requires_grad,model.parameters()),lr=1e-3,amsgrad=True)
 
 # Checkpoint and resuming logic
 start_epoch = 1
@@ -439,6 +495,7 @@ print('RunID:', runId)
 # === Set Parameters from args ===
 # Set model regularization coefficients from args
 model.params.cross_mi_loss_scale = args.cross_mi_loss_scale
+model.params.z_alignment_loss_scale = args.z_alignment_loss_scale
 model.params.gen_aug_loss_scale = args.gen_aug_loss_scale
 model.params.gen_aug_sampling_scheme = args.gen_aug_sampling_scheme
 model.params.gen_aug_loss_type = args.gen_aug_loss_type
@@ -512,12 +569,25 @@ if args.dataset == 'UCF':
 
     # Temporary. If this is true, loaded image tensors should be of size [4, 32, 32]. If false, [3, 64, 64].
     use_pretrain_feats = args.use_pretrain_feats
+    if args.image_encoder_arch == "siglip":
+
+        # Model still uses latent reconstruction,
+        # but SigLIP encoder itself must receive RGB.
+        dataset_use_pretrain_feats = False
+
+    else:
+
+        dataset_use_pretrain_feats = use_pretrain_feats
+
+
     if use_pretrain_feats:
         assert args.img_size == 32
         assert args.img_channels == 4
     else:
         assert args.img_size == 64
         assert args.img_channels == 3
+
+
 
     vae = None
 
@@ -591,6 +661,7 @@ if args.dataset == 'UCF':
         else None,
     }
 
+    use_pretrain_feats = dataset_use_pretrain_feats
     # Full train set (clusters + Other)
     train_dataset = UCFDataset(
         datadir=base_dir,
@@ -706,7 +777,8 @@ def train(epoch):
 
         bs = data[0].size(0)
 
-        loss, recon_kl_sum_loss, llik_recon_loss, kl_div_loss, cross_mi_loss, gen_aug_loss, diffusion_loss = compute_idmvae_loss(
+        (loss, recon_kl_sum_loss, llik_recon_loss, kl_div_loss, cross_mi_loss, z_alignment_loss,
+         gen_aug_loss, diffusion_loss) = compute_idmvae_loss(
             model, data, K=args.K)
 
         wandb.log({"Loss/train_loss": loss}, step=epoch)
@@ -714,6 +786,7 @@ def train(epoch):
         wandb.log({"Loss/train_likelihood": llik_recon_loss}, step=epoch)
         wandb.log({"Loss/train_kl": kl_div_loss}, step=epoch)
         wandb.log({"Loss/train_cross_mi": cross_mi_loss}, step=epoch)
+        wandb.log({"Loss/train_z_alignment": z_alignment_loss.item()},step=epoch)
         wandb.log({"Loss/train_gen_aug": gen_aug_loss}, step=epoch)
         wandb.log({"Loss/train_diffusion_loss": diffusion_loss.item()}, step=epoch)
 
@@ -736,7 +809,13 @@ def evaluate_img2text(epoch):
                     ↓
               text decoder
 
-    No latent pre-generation and no DiT are involved.
+    Saves:
+        refs_img2text_qzpw.json
+        gens_img2text_qzpw.json
+        samples_img2text_qzpw.json
+
+    The third file explicitly maps every generated caption/reference
+    to its original dataset image.
     """
 
     print(f"--- Evaluating Image -> Text for Epoch {epoch} ---")
@@ -752,19 +831,95 @@ def evaluate_img2text(epoch):
     refs = {}
     gens = {}
 
+    # Combined human-readable mapping:
+    #
+    # image_<dataset_index>:
+    # {
+    #     dataset_index,
+    #     image_id,
+    #     image_path,
+    #     annotation_id,
+    #     video_id,
+    #     split,
+    #     reference,
+    #     generation
+    # }
+    samples = {}
+
+    # ------------------------------------------------------
+    # Load dataset metadata
+    # ------------------------------------------------------
+    print(args.datadir)
+    metadata_path = os.path.join(
+        args.datadir,
+        "metadata.jsonl"
+    )
+
+    if not os.path.isfile(metadata_path):
+        raise FileNotFoundError(
+            f"metadata.json not found: {metadata_path}"
+        )
+
+    with open(
+        metadata_path,
+        "r",
+        encoding="utf-8"
+    ) as f:
+        metadata = json.load(f)
+
+    image_paths = metadata.get("image_paths")
+    annotation_ids = metadata.get("annotation_ids")
+    video_ids = metadata.get("video_ids")
+    split_names = metadata.get("splits")
+
+    if image_paths is None:
+        raise KeyError(
+            "metadata.json does not contain 'image_paths'."
+        )
+
     special_tokens = {
         dataset.pad_token,
         dataset.eos_token,
     }
 
-    sample_counter = 0
+    # ------------------------------------------------------
+    # Small helper to avoid duplicating caption decoding
+    # ------------------------------------------------------
+    def decode_caption(caption_tensor):
+        indices = torch.argmax(
+            caption_tensor,
+            dim=-1
+        ).numpy()
+
+        words = []
+
+        for idx in indices:
+
+            token = dataset.i2w.get(
+                str(int(idx)),
+                "<unk>"
+            )
+
+            if token == dataset.eos_token:
+                break
+
+            if token != dataset.pad_token:
+                words.append(token)
+
+        return " ".join(words)
 
     with torch.no_grad():
 
         for dataT in loader:
 
-            # Same unpacking used by train() and test().
-            data, _ = unpack_data_CUBcluster8(
+            # --------------------------------------------------
+            # IMPORTANT:
+            # Keep labels because they contain:
+            #
+            # labels[3] = img_id
+            # labels[4] = dataset_index
+            # --------------------------------------------------
+            data, labels = unpack_data_CUBcluster8(
                 dataT,
                 device=device
             )
@@ -774,15 +929,30 @@ def evaluate_img2text(epoch):
 
             batch_size = images.size(0)
 
+            _, _, _, img_ids, dataset_indices = labels
+
+            # Keep metadata indices on CPU.
+            img_ids_cpu = (
+                img_ids
+                .detach()
+                .cpu()
+            )
+
+            dataset_indices_cpu = (
+                dataset_indices
+                .detach()
+                .cpu()
+            )
+
             # --------------------------------------------------
-            # 1. Encode image through the image modality VAE
+            # 1. Encode image through image modality VAE
             # --------------------------------------------------
             _, _, img_us = img_vae(
                 images,
                 K=1
             )
 
-            # img_us shape:
+            # img_us:
             # [K=1, B, latent_dim_w + latent_dim_z]
 
             _, latents_z_img = torch.split(
@@ -795,11 +965,14 @@ def evaluate_img2text(epoch):
             )
 
             # --------------------------------------------------
-            # 2. Obtain text-private w from its prior
+            # 2. Obtain text-private w from prior
             # --------------------------------------------------
             if args.img2text_use_diffusion_prior:
+
                 p_w_text = model.pws_diffusion[1]
+
             else:
+
                 p_w_text = model.get_simple_prior_w(
                     view=1,
                     aux=False
@@ -815,8 +988,8 @@ def evaluate_img2text(epoch):
             # --------------------------------------------------
             # 3. Combine:
             #
-            #    w_text ~ p(w_text)
-            #    z_img  ~ q(z_img | image)
+            # w_text ~ p(w_text)
+            # z_img  ~ q(z_img | image)
             # --------------------------------------------------
             latents_txt = torch.cat(
                 (
@@ -827,7 +1000,7 @@ def evaluate_img2text(epoch):
             )
 
             # --------------------------------------------------
-            # 4. Decode into text
+            # 4. Decode text
             # --------------------------------------------------
             px_txt = text_vae.px_u(
                 *text_vae.dec(latents_txt)
@@ -842,55 +1015,63 @@ def evaluate_img2text(epoch):
             captions_cpu = captions.cpu()
 
             # --------------------------------------------------
-            # 5. Convert one-hot/probabilities back to words
+            # 5. Convert captions and preserve image alignment
             # --------------------------------------------------
             for i in range(batch_size):
 
-                sample_counter += 1
-                key = f"image_{sample_counter}"
+                dataset_idx = int(
+                    dataset_indices_cpu[i].item()
+                )
 
-                # ---------- Reference caption ----------
-                ref_words = []
+                img_id = int(
+                    img_ids_cpu[i].item()
+                )
 
-                ref_indices = torch.argmax(
-                    captions_cpu[i],
-                    dim=-1
-                ).numpy()
+                # UCA has one caption per image, so using the
+                # true global dataset index as key is safe.
+                key = f"image_{dataset_idx}"
 
-                for idx in ref_indices:
-                    token = dataset.i2w.get(
-                        str(int(idx)),
-                        '<unk>'
+                reference_caption = decode_caption(
+                    captions_cpu[i]
+                )
+
+                generated_caption = decode_caption(
+                    generated[i]
+                )
+
+                # --------------------------------------------------
+                # Original metric-compatible files
+                # --------------------------------------------------
+                refs[key] = reference_caption
+                gens[key] = generated_caption
+
+                # --------------------------------------------------
+                # Explicit image-caption alignment
+                # --------------------------------------------------
+                sample = {
+                    "dataset_index": dataset_idx,
+                    "image_id": img_id,
+                    "image_path": image_paths[dataset_idx],
+                    "reference": reference_caption,
+                    "generation": generated_caption,
+                }
+
+                if annotation_ids is not None:
+                    sample["annotation_id"] = (
+                        annotation_ids[dataset_idx]
                     )
 
-                    if token == dataset.eos_token:
-                        break
-
-                    if token != dataset.pad_token:
-                        ref_words.append(token)
-
-                # ---------- Generated caption ----------
-                gen_words = []
-
-                gen_indices = torch.argmax(
-                    generated[i],
-                    dim=-1
-                ).numpy()
-
-                for idx in gen_indices:
-                    token = dataset.i2w.get(
-                        str(int(idx)),
-                        '<unk>'
+                if video_ids is not None:
+                    sample["video_id"] = (
+                        video_ids[dataset_idx]
                     )
 
-                    if token == dataset.eos_token:
-                        break
+                if split_names is not None:
+                    sample["split"] = (
+                        split_names[dataset_idx]
+                    )
 
-                    if token != dataset.pad_token:
-                        gen_words.append(token)
-
-                refs[key] = " ".join(ref_words)
-                gens[key] = " ".join(gen_words)
+                samples[key] = sample
 
     # ------------------------------------------------------
     # Save results
@@ -915,7 +1096,17 @@ def evaluate_img2text(epoch):
         "gens_img2text_qzpw.json"
     )
 
-    with open(refs_path, "w") as f:
+    samples_path = os.path.join(
+        img2text_dir,
+        "samples_img2text_qzpw.json"
+    )
+
+    with open(
+        refs_path,
+        "w",
+        encoding="utf-8"
+    ) as f:
+
         json.dump(
             refs,
             f,
@@ -923,9 +1114,27 @@ def evaluate_img2text(epoch):
             ensure_ascii=False
         )
 
-    with open(gens_path, "w") as f:
+    with open(
+        gens_path,
+        "w",
+        encoding="utf-8"
+    ) as f:
+
         json.dump(
             gens,
+            f,
+            indent=4,
+            ensure_ascii=False
+        )
+
+    with open(
+        samples_path,
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        json.dump(
+            samples,
             f,
             indent=4,
             ensure_ascii=False
@@ -941,6 +1150,10 @@ def evaluate_img2text(epoch):
 
     print(
         f"Generations saved to: {gens_path}"
+    )
+
+    print(
+        f"Image/caption alignment saved to: {samples_path}"
     )
 
 def evaluate_text2text_mean(epoch):
@@ -1135,18 +1348,20 @@ def test(epoch):
     """Test-time loss on the test loader only."""
     model.eval()
     b_loss = 0
-    with torch.no_grad():
+    with ((torch.no_grad())):
         for _, dataT in enumerate(test_time_loader):
             data, _ = unpack_data_CUBcluster8(dataT, device=device)
             bs = data[0].size(0)
-            loss, recon_kl_sum_loss, llik_recon_loss, kl_div_loss, cross_mi_loss, gen_aug_loss, diffusion_loss = compute_idmvae_loss(
-                model, data, K=args.K, test=True
-            )
+            (loss, recon_kl_sum_loss, llik_recon_loss, kl_div_loss, cross_mi_loss,
+            z_alignment_loss,gen_aug_loss, diffusion_loss) = compute_idmvae_loss(model, data, K=args.K, test=True)
+
+
             wandb.log({"Loss/test_loss": loss}, step=epoch)
             wandb.log({"Loss/test_recon_kl_sum": recon_kl_sum_loss}, step=epoch)
             wandb.log({"Loss/test_likelihood": llik_recon_loss}, step=epoch)
             wandb.log({"Loss/test_kl": kl_div_loss}, step=epoch)
             wandb.log({"Loss/test_cross_mi": cross_mi_loss}, step=epoch)
+            wandb.log({"Loss/train_z_alignment": z_alignment_loss.item()}, step=epoch)
             wandb.log({"Loss/test_gen_aug": gen_aug_loss}, step=epoch)
             wandb.log({"Loss/test_diffusion_loss": diffusion_loss.item()}, step=epoch)
             b_loss += loss.item() * bs
@@ -2451,10 +2666,10 @@ if __name__ == '__main__':
         _log_param_counts(f"test_only_epoch_{epoch_to_test}")
 
         evaluate_wz_ablation(
-            epoch=150,
-        )
-
+             epoch=50,
+         )
         print(ent)
+
 
 
         run_evaluation(epoch_to_test)
@@ -2464,7 +2679,7 @@ if __name__ == '__main__':
 
     else:
         # --- Training Mode ---
-        test_epoch_freq = 10
+        test_epoch_freq = 1
 
 
         def _collect_checkpoints(prefix):

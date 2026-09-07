@@ -515,7 +515,8 @@ def cub_self_and_cross_modal_generation_eval(
                 input_data = _plot_sentences_as_tensor(model, data[r][:num]).cpu()
             else:
                 input_data = data[r][:num]
-                if model.params.use_pretrain_feats:
+                #if model.params.use_pretrain_feats:
+                if (model.params.use_pretrain_feats and getattr(model.params,"image_encoder_arch","cnn") == "cnn"):
                     vae_device = next(model.pretrained_vae.parameters()).device
                     input_data = model.pretrained_vae.decode(
                         (input_data / 0.18215).to(vae_device)
@@ -592,7 +593,8 @@ def cub_self_and_cross_modal_generation_eval(
                 input_data = _plot_sentences_as_tensor(model, data[r][:num]).cpu()
             else:
                 input_data = data[r][:num]
-                if model.params.use_pretrain_feats:
+                #if model.params.use_pretrain_feats:
+                if (model.params.use_pretrain_feats and getattr(model.params, "image_encoder_arch","cnn") == "cnn"):
                     vae_device = next(model.pretrained_vae.parameters()).device
                     input_data = model.pretrained_vae.decode(
                         (input_data / 0.18215).to(vae_device)
@@ -799,7 +801,8 @@ def cub_self_and_cross_modal_generation_eval(
                 input_data = _plot_sentences_as_tensor(model, data[r][:num]).cpu()
             else:
                 input_data = data[r][:num]
-                if model.params.use_pretrain_feats:
+                #if model.params.use_pretrain_feats:
+                if (model.params.use_pretrain_feats and getattr(model.params, "image_encoder_arch","cnn") == "cnn"):
                     vae_device = next(model.pretrained_vae.parameters()).device
                     input_data = model.pretrained_vae.decode(
                         (input_data / 0.18215).to(vae_device)

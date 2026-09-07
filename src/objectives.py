@@ -1,6 +1,10 @@
 # Objectives
 import torch
 from utils import log_mean_exp
+from siglip_image_bridge import (
+    get_reconstruction_targets,
+    prepare_augmented_data_for_encoder,
+)
 
 """
 Abbreviations:
@@ -69,6 +73,8 @@ def compute_elbo_loss(model, x, K=1, test=False):
     else:
         qu_xs, px_us, uss = model(x, K)
 
+    reconstruction_targets = (get_reconstruction_targets(model,x))
+
     # Initialize lists to store shared and private latents and latent distributions for generative augmentation.
     shared_latents, shared_dists = [], []  # prior, posterior
     private_latents, private_dists = [], []
@@ -127,7 +133,8 @@ def compute_elbo_loss(model, x, K=1, test=False):
         # px_u: dist, [K, B, channel, height, width]
         # Each element of lpx_u has shape [K, B]
         lpx_u = [
-            px_u.log_prob(x[d])
+            #px_u.log_prob(x[d])
+            px_u.log_prob(reconstruction_targets[d])
             .view(*px_u.batch_shape[:2], -1)
             .mul(model.vaes[d].llik_scaling)
             .sum(-1)
@@ -214,6 +221,72 @@ def compute_cross_mi_loss(dists_shared, mi_estimators, use_mean_for_mi=True):
     cross_mi_loss = cross_mi_loss / (num_views - 1)
     return cross_mi_loss
 
+
+def compute_shared_z_alignment_loss(shared_dists):
+    """
+    Align paired shared posterior distributions across modalities.
+
+    For diagonal Gaussian posteriors, this is the dimension-normalized
+    squared 2-Wasserstein distance:
+
+        ||mu_i - mu_j||^2 + ||sigma_i - sigma_j||^2
+
+    averaged over latent dimensions, batch, and modality pairs.
+
+    shared_dists[i].loc   : [B, Z]
+    shared_dists[i].scale : [B, Z]
+    """
+    num_views = len(shared_dists)
+
+    if num_views < 2:
+        return shared_dists[0].loc.new_tensor(0.0)
+
+    loss = 0.0
+    num_pairs = 0
+
+    mu_txt = shared_dists[1].loc.detach()
+    sigma_txt = shared_dists[1].scale.detach()
+
+    mu_img = shared_dists[0].loc
+    sigma_img = shared_dists[0].scale
+
+    z_alignment_loss = (
+            (mu_img - mu_txt).pow(2)
+            + (sigma_img - sigma_txt).pow(2)
+    ).mean()
+
+    return z_alignment_loss
+
+    # for i in range(num_views):
+    #     for j in range(i + 1, num_views):
+    #
+    #
+    #         mu_txt = shared_dists[1].loc.detach()
+    #         sigma_txt = shared_dists[1].scale.detach()
+    #
+    #         mu_img = shared_dists[0].loc
+    #         sigma_img = shared_dists[0].scale
+    #
+    #         z_alignment_loss = (
+    #                 (mu_img - mu_txt).pow(2)
+    #                 + (sigma_img - sigma_txt).pow(2)
+    #         ).mean()
+    #
+    #         mu_i = shared_dists[i].loc
+    #         mu_j = shared_dists[j].loc
+    #
+    #         sigma_i = shared_dists[i].scale
+    #         sigma_j = shared_dists[j].scale
+    #
+    #         pair_loss = (
+    #             (mu_i - mu_j).pow(2)
+    #             + (sigma_i - sigma_j).pow(2)
+    #         ).mean()
+    #
+    #         loss += pair_loss
+    #         num_pairs += 1
+    #
+    # return loss / num_pairs
 
 def compute_gen_aug_loss(
     shared_latents,
@@ -415,7 +488,9 @@ def compute_gen_aug_loss_oneview(
 
     # Encode augmented data to get new latents
     # mu, sigma shape: (K*B, W+Z)
-    mu, sigma = encoder(aug_data)  # Normal or Laplace: mu(loc) and sigma(scale)
+    #mu, sigma = encoder(aug_data)  # Normal or Laplace: mu(loc) and sigma(scale)
+    aug_data_for_encoder = (prepare_augmented_data_for_encoder(model,aug_data,view_index))
+    mu, sigma = encoder(aug_data_for_encoder)
 
     # Split the mu and logvar into shared and private parts
     private_mu, shared_mu = torch.split(
@@ -574,6 +649,25 @@ def compute_idmvae_loss(model, x, K=1, test=False):  # , current_ iteration=None
     else:
         cross_mi_loss = torch.tensor(0.0).to(device)
 
+    # --- Reg 1.5: Direct shared-posterior alignment ---
+    if model.params.z_alignment_loss_scale > 0.0:
+
+        if model.params.priorposterior != "Normal":
+            raise ValueError(
+                "z_alignment_loss currently assumes Gaussian/Normal posteriors."
+            )
+
+        z_alignment_loss = compute_shared_z_alignment_loss(
+            shared_dists
+        )
+
+        total_loss += (
+                model.params.z_alignment_loss_scale
+                * z_alignment_loss
+        )
+    else:
+        z_alignment_loss = torch.tensor(0.0).to(device)
+
     # --- Reg 2: Generative augmentation loss ---
     if model.params.gen_aug_loss_scale > 0.0:
         gen_aug_loss = compute_gen_aug_loss(
@@ -607,6 +701,7 @@ def compute_idmvae_loss(model, x, K=1, test=False):  # , current_ iteration=None
         llik_recon_loss,
         KL_div_loss,
         cross_mi_loss,
+        z_alignment_loss,
         gen_aug_loss,
         diffusion_loss,
     )

@@ -37,9 +37,9 @@ if [ "$MODE" = "test" ]; then
 fi
 
 # Model hyperparameters (Appendix C.2: 50 epochs; λ1=40, λ2=10, diffusion 0.1)
-BATCH=2
+BATCH=256
 K=1
-EPOCHS=150
+EPOCHS=50
 SEED=2
 NUM_WORKERS=4
 
@@ -53,7 +53,7 @@ diff_sg="OFF"
 
 CROSS_L_SC=40.0
 GEN_AUG_L_SC=10.0
-Z_L_SC=0
+Z_L_SC=2000.0
 gen_aug_scheme="posterior"
 GEN_AUG_TYPE="CL"
 
@@ -141,8 +141,7 @@ RUN_NOTE="${RUN_NOTE_PREFIX}${date}_${number}_gpu${gpuid}${note}"
 tSNE_save_dir="${CUB_TSNE_ROOT}/${EXPERIMENT}/${date}_${number}_${note}"
 
 
-test_time_dataset_state="train"  # eval, test
-
+test_time_dataset_state="test"  # eval, tes
 
 
 CMD_ARGS_BASE=(
@@ -174,9 +173,6 @@ CMD_ARGS_BASE=(
   "--test_time_dataset_state" "${test_time_dataset_state}"
   "--num_workers" "${NUM_WORKERS}"
   "--use_pretrain_feats"
-  "--image_encoder_arch" "siglip"
-  "--siglip_model_name" "google/siglip-base-patch16-256"
-  "--siglip_lr" "1e-5"
   #"--resume"
   #"--resume_from_CPt_runId"
   #"--CPt_runId" "UCF_release_11_20_19/checkpoints/09-02_0_gpu0_ltCL_TD_lw0.1_K1_B256_Normal_Laplace_b1.0_10.0_40.0_256_256_s2"
@@ -184,7 +180,7 @@ CMD_ARGS_BASE=(
   #"--enable_img2text"
   #"--img2text_use_diffusion_prior"
   #"--enable_text2text_mean"
-  #"--checkpoint-path" "/home/chatziko/PycharmProjects/PythonProject/IDMVAE/outputs/UCF_release_02_21_43/checkpoints/09-05_0_gpu0_ltCL_TD_lw0.1_K1_B256_Normal_Laplace_b1.0_10.0_40.0_2000.0256_256_s2/model_50.rar"
+  #"--checkpoint-path" "/home/chatziko/PycharmProjects/PythonProject/IDMVAE/outputs/UCA_new_baseline/checkpoints/09-02_0_gpu0_ltCL_TD_lw0.1_K1_B256_Normal_Laplace_b1.0_10.0_40.0_256_256_s2/model_50.rar"
 )
 
 if [ -n "${diff_stop_grad}" ]; then
