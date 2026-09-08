@@ -127,6 +127,13 @@ parser.add_argument('--image_encoder_arch',type=str,choices=['cnn', 'siglip'],de
 parser.add_argument('--siglip_model_name',type=str,default='google/siglip-base-patch16-256')
 parser.add_argument('--siglip_lr',type=float, default=1e-5)
 
+parser.add_argument(
+    '--amp',
+    action='store_true',
+    default=False,
+    help='Use CUDA automatic mixed precision (BF16).'
+)
+
 parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="mse")
 parser.add_argument('--patch_size', type=int, default=2,
                     help='Patch size for DiT-based encoder/decoder, higher->faster.')
@@ -334,6 +341,8 @@ torch.use_deterministic_algorithms(True)
 args.cuda = not args.no_cuda and torch.cuda.is_available()
 device = torch.device("cuda" if args.cuda else "cpu")
 print(device)
+
+use_amp = args.amp and device.type == "cuda"
 
 modelC = getattr(models, 'IDMVAE_UCF_Image_Captions')
 model = modelC(2505, args).to(device)
@@ -777,9 +786,10 @@ def train(epoch):
 
         bs = data[0].size(0)
 
-        (loss, recon_kl_sum_loss, llik_recon_loss, kl_div_loss, cross_mi_loss, z_alignment_loss,
-         gen_aug_loss, diffusion_loss) = compute_idmvae_loss(
-            model, data, K=args.K)
+        with torch.amp.autocast(device_type="cuda",dtype=torch.bfloat16,enabled=use_amp):
+            (loss, recon_kl_sum_loss, llik_recon_loss, kl_div_loss, cross_mi_loss, z_alignment_loss,
+             gen_aug_loss, diffusion_loss) = compute_idmvae_loss(
+                model, data, K=args.K)
 
         wandb.log({"Loss/train_loss": loss}, step=epoch)
         wandb.log({"Loss/train_recon_kl_sum": recon_kl_sum_loss}, step=epoch)
@@ -1352,8 +1362,10 @@ def test(epoch):
         for _, dataT in enumerate(test_time_loader):
             data, _ = unpack_data_CUBcluster8(dataT, device=device)
             bs = data[0].size(0)
-            (loss, recon_kl_sum_loss, llik_recon_loss, kl_div_loss, cross_mi_loss,
-            z_alignment_loss,gen_aug_loss, diffusion_loss) = compute_idmvae_loss(model, data, K=args.K, test=True)
+
+            with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
+                (loss, recon_kl_sum_loss, llik_recon_loss, kl_div_loss, cross_mi_loss,
+                z_alignment_loss,gen_aug_loss, diffusion_loss) = compute_idmvae_loss(model, data, K=args.K, test=True)
 
 
             wandb.log({"Loss/test_loss": loss}, step=epoch)

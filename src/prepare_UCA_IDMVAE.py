@@ -40,16 +40,23 @@ IMAGE_SIZE = 256
 # Image preprocessing
 # ---------------------------------------------------------------------
 
-image_transform = transforms.Compose(
-    [
-        transforms.Resize(
-            (IMAGE_SIZE, IMAGE_SIZE),
-            antialias=True,
-        ),
-        transforms.ToTensor(),
-    ]
-)
+image_transform = transforms.Compose([
+    # Original: 320x240 (W x H)
+    # Resize preserving 4:3 aspect ratio -> 256x192
+    transforms.Resize(
+        (192, 256),  # (height, width)
+        antialias=True,
+    ),
 
+    # Pad height: 192 + 32 + 32 = 256
+    # Format: (left, top, right, bottom)
+    transforms.Pad(
+        (0, 32, 0, 32),
+        fill=0,
+    ),
+
+    transforms.ToTensor(),
+])
 
 def load_image(image_path: Path) -> torch.Tensor:
     """
