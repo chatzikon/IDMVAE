@@ -1016,7 +1016,8 @@ class EmbeddedDataset_visualization: # tSNE, UMAP, PCA, etc.
 
                 # NOTE: currently, data_loader here returns only one modality but in list
                 if isinstance(x, list):  # If x contains multiple modalities
-                    x = x[view_idx].to(device) if view_idx is not None else x[0].to(device)
+                    #x = x[view_idx].to(device) if view_idx is not None else x[0].to(device)
+                    x = x[view_idx] if view_idx is not None else x[0]
                 else:
                     x = x.to(device)
 

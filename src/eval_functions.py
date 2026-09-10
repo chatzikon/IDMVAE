@@ -15,6 +15,8 @@ from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score, accuracy_score, confusion_matrix, ConfusionMatrixDisplay
 
+from torch.utils.data import DataLoader, Subset
+
 import gc
 
 import warnings
@@ -532,8 +534,58 @@ def visualize_latents_with_priors(
     #     view_idx=view_index,
     #     batch_size=batch_size,
     # )
+    # ---------------------------------------------------------
+    # Subsample BEFORE latent/RGB materialization
+    # ---------------------------------------------------------
+    base_test_dataset = test_loader.dataset
+    total = len(base_test_dataset)
+
+    sample_size_float = total * visualize_ratio
+    sample_size_int = min(
+        total,
+        math.floor(sample_size_float),
+    )
+
+    if sample_size_int < total:
+        sample_size_int = (sample_size_int // batch_size) * batch_size
+
+
+    print(
+        f"Total samples: {total}, "
+        f"Sample size for visualization: "
+        f"{sample_size_int}({sample_size_float})"
+    )
+
+    indices = np.random.choice(
+        total,
+        sample_size_int,
+        replace=False,
+    )
+
+    # Keep deterministic/original ordering inside the subset.
+    indices = np.sort(indices)
+
+    sampled_test_dataset = Subset(
+        base_test_dataset,
+        indices.tolist(),
+    )
+
+    sampled_test_loader = DataLoader(
+        sampled_test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=(device.type == "cuda")
+        if isinstance(device, torch.device)
+        else str(device).startswith("cuda"),
+    )
+
+    n_prior = min(n_prior, sample_size_int)
+
+
+
     embedded_test_set = EmbeddedDataset(
-        base_dataloader=test_loader,
+        base_dataloader=sampled_test_loader,
         vae=vae,
         encoder=encoder,
         device=device,
@@ -575,24 +627,24 @@ def visualize_latents_with_priors(
 
     # 2) Split into shared (Z) and private (W)
     # --Step 3: Random subsample the test set
-    total = len(FX_test)
-    # total = len(FX_valid)
-    sample_size_float = total * visualize_ratio #// 4  # Adjust ratio as needed
-    sample_size_int = min(total, math.floor(sample_size_float))
-    print(f"Total samples: {total}, Sample size for visualization: {sample_size_int}({sample_size_float})")
-    indices = np.random.choice(total, sample_size_int, replace=False)
-    n_prior = min(n_prior, sample_size_int)  # Ensure n_prior does not exceed sample size
-
-    FX_test = FX_test[indices]
-    #X_test = X_test[indices]
-    Y_test = Y_test[indices]  # = Y_test_orig[indices]
+    # total = len(FX_test)
+    # # total = len(FX_valid)
+    # sample_size_float = total * visualize_ratio #// 4  # Adjust ratio as needed
+    # sample_size_int = min(total, math.floor(sample_size_float))
+    # print(f"Total samples: {total}, Sample size for visualization: {sample_size_int}({sample_size_float})")
+    # indices = np.random.choice(total, sample_size_int, replace=False)
+    # n_prior = min(n_prior, sample_size_int)  # Ensure n_prior does not exceed sample size
+    #
+    # FX_test = FX_test[indices]
+    # #X_test = X_test[indices]
+    # Y_test = Y_test[indices]  # = Y_test_orig[indices]
 
     X_test = None
     original_test_set = None
 
     if view_index == 0:
         original_test_set = EmbeddedDataset(
-            base_dataloader=test_loader,
+            base_dataloader=sampled_test_loader,
             vae=vae,
             encoder=None,
             device=device,
@@ -605,7 +657,7 @@ def visualize_latents_with_priors(
         X_test, _ = build_matrix(original_test_set)
 
         # Keep the same samples as the latent representation
-        X_test = X_test[indices]
+        #X_test = X_test[indices]
 
 
     W_dim = model.params.latent_dim_w

@@ -17,6 +17,7 @@ import wandb
 import numpy as np
 import traceback
 import logging
+import bitsandbytes as bnb
 
 # Deterministic behavior:
 # https://pytorch.org/docs/stable/notes/randomness.html
@@ -249,18 +250,23 @@ parser.add_argument(
     choices=['train', 'eval', 'test'],
     help="Dataset split used for evaluation: one of {'train','eval','test'}.",
 )
-
+#enable_qualitative_visuals
 # Evaluation metrics
 parser.add_argument('--enable_test_epoch', action='store_true', default=False,
                     help='Enable test epoch for evaluation.')
+parser.add_argument('--enable_qualitative_visuals', action='store_true', default=False,
+                    help='Enable generation of qualitative visuals during testing.')
 parser.add_argument('--enable_unconditional_generation', action='store_true', default=False,
                     help='Enable unconditional generation during testing.')
+
+
 parser.add_argument('--enable_img2text', action='store_true', default=False,
                     help='Generate image->text captions over the selected test-time split.')
 parser.add_argument('--img2text_use_diffusion_prior', action='store_true', default=False,
                     help='Use the learned IDMVAE diffusion prior for p(w_text) instead of the simple prior.')
 parser.add_argument('--enable_text2text_mean',action='store_true',default=False,
                     help='Evaluate Text->Text reconstruction using the posterior mean.')
+
 parser.add_argument('--enable_latent_classification', action='store_true', default=False,
                     help='Enable latent classification during testing.')
 parser.add_argument('--use_mean_for_latent_clf', action='store_true', default=False,
@@ -275,6 +281,7 @@ parser.add_argument('--save_eval_images_root', type=str, default='',
 
 # args
 args = parser.parse_args()
+
 
 # ---------------------------------------------------------
 # Validate SigLIP configuration
@@ -421,7 +428,10 @@ if args.image_encoder_arch == "siglip":
         else:
             other_params.append(p)
 
-    optimizer = optim.Adam(        [
+
+
+    optimizer = optim.Adam(
+        [
             {
                 "params": siglip_params,
                 "lr": args.siglip_lr,
@@ -433,6 +443,8 @@ if args.image_encoder_arch == "siglip":
         ],
         amsgrad=True,
     )
+
+
 
 else:
     optimizer = optim.Adam(filter(lambda p: p.requires_grad,model.parameters()),lr=1e-3,amsgrad=True)
@@ -559,7 +571,10 @@ effective_num_workers = (
 #     "generator": g,
 # }
 
-kwargs = {'num_workers': effective_num_workers, 'pin_memory': True} if device == 'cuda' else {}
+#kwargs = {'num_workers': effective_num_workers, 'pin_memory': True} if device == 'cuda' else {}
+
+kwargs = {"num_workers": effective_num_workers,"pin_memory": device.type == "cuda"}
+
 g = torch.Generator()
 g.manual_seed(0)
 kwargs['generator'] = g
@@ -599,23 +614,26 @@ if args.dataset == 'UCF':
 
 
     vae = None
+    pretrained_vae = None
 
 
     if use_pretrain_feats:
         assert torch.cuda.is_available()
-        device = torch.device("cuda")
-        sd_vae_ft = args.vae if hasattr(args, "vae") else "mse"
+        #device = torch.device("cuda")
+        #sd_vae_ft = args.vae if hasattr(args, "vae") else "mse"
 
-        vae = AutoencoderKL.from_pretrained(
-            f"stabilityai/sd-vae-ft-{sd_vae_ft}"
-        ).to(device)
+        # vae = AutoencoderKL.from_pretrained(
+        #     f"stabilityai/sd-vae-ft-{sd_vae_ft}"
+        # ).to(device)
+        vae=model.pretrained_vae
+        pretrained_vae = vae
+
 
         vae.eval()
         for p in vae.parameters():
             p.requires_grad = False
 
         # Reuse the same object for evaluation/visualization.
-        pretrained_vae = vae
 
     # else:
     #     # Pretrained VAE for image feature extraction
@@ -1479,23 +1497,35 @@ def _cub_test_epoch_qualitative_visuals(epoch):
         all the input or generated captions and the labels can log in the wandb.caption
         """
         input_images_latent = test_selected_samples[0]
-        if args.use_pretrain_feats:
+
+        channels = input_images_latent.shape[1]
+
+        if channels == 4:
             """cannot do sth like:
             input_images[n] = pretrained_vae.decode(
             RuntimeError: The expanded size of the tensor (32) must match the existing size (256) at non-singleton dimension 2.  Target sizes: [4, 32, 32].  Tensor sizes: [3, 256, 256]
             """
-            vae_device = next(pretrained_vae.parameters()).device
             decoded_images = []
+            vae_param = next(pretrained_vae.parameters())
+
             for n in range(num_cols):
                 # input_images_latent[n]: [4, 32, 32]
                 # convert to [3, 256, 256] for better visualization
-                latent = (input_images_latent[n].unsqueeze(0) / 0.18215).to(vae_device)
+                latent = input_images_latent[n].unsqueeze(0).to(device=vae_param.device,dtype=vae_param.dtype)
+
+                latent = latent / 0.18215
+
                 decoded = pretrained_vae.decode(latent).sample.squeeze(0)
                 decoded = decoded.add(1).div(2).clamp(0, 1)
                 decoded_images.append(decoded.cpu())
             input_images = torch.stack(decoded_images, dim=0)
-        else:
+        elif channels == 3:
             input_images = input_images_latent.cpu()
+        else:
+            raise ValueError(
+                f"Unexpected image tensor shape: "
+                f"{tuple(input_images_latent.shape)}"
+            )
 
         input_caption_tensor = test_selected_samples[1]
         if args.save_eval_images_root:
@@ -1949,7 +1979,7 @@ def _cub_test_epoch_qualitative_visuals(epoch):
                         cg_imgs_Shared_post_ext[i][j])}, step=epoch)
                 if cg_imgs_Shared_post_ext_denoised and cg_imgs_Shared_post_ext_denoised[i][j] is not None:
                     wandb.log({'IMG_Self&Cros_Gen_Cluster_post_extended/qz_m{}+qw_m{}_shuf_denoised'.format(i,
-                                                                                                            j): wandb.Image(
+                                                                                                         j): wandb.Image(
                         cg_imgs_Shared_post_ext_denoised[i][j])}, step=epoch)
 
         cg_imgs_Private_post, cg_imgs_Private_post_ext, cg_imgs_Private_post_ext_denoised = cub_self_and_cross_modal_generation_eval(
@@ -1987,6 +2017,8 @@ def _cub_test_epoch_qualitative_visuals(epoch):
                         cg_imgs_Shared_post_nonshuf_denoised[i][j])}, step=epoch)
 
 
+
+
 def run_evaluation(epoch):
     """
     Runs the full evaluation suite for CUB.
@@ -2006,6 +2038,8 @@ def run_evaluation(epoch):
     print(f"--- Running Full Evaluation for Epoch {epoch} ---")
     if args.enable_test_epoch:
         test(epoch)
+
+    if args.enable_qualitative_visuals:
         _cub_test_epoch_qualitative_visuals(epoch)
 
 
@@ -2018,6 +2052,12 @@ def run_evaluation(epoch):
     # ======== START: Latent Classifiers and Linear Classification ========
     if args.enable_latent_classification:
         # --- Cluster (Shared Attribute) Classification ---
+
+        gc.collect()
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         print("Evaluating Cluster Classification...")
 
         # MODIFIED: Create more descriptive captions for wandb logs
@@ -2121,7 +2161,7 @@ def run_evaluation(epoch):
                 # 1. Create a list to hold the wandb.Image objects
                 images_to_log = []
                 # Log up to xx samples per color
-                for i in indices:  # [:100]:
+                for i in indices[:100]:
                     # 2. Get the image and labels for one sample
                     image = cluster_data['images'][i]  # *10 Get the first image of the 10 duplicates
 
@@ -2206,6 +2246,20 @@ def run_evaluation(epoch):
                 "Confidence/Hist_Cluster_Txt_W": wandb.Histogram(cluster_data['preds']['m1_w_confidence']),
             }, step=epoch)
 
+        del accuracies_lc_cluster
+        del clf_lr_cluster
+
+        if "cluster_data" in locals():
+            del cluster_data
+
+        if "top_cluster_samples" in locals():
+            del top_cluster_samples
+
+        gc.collect()
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         # --- Color (Private Attribute) Classification ---
         print("\nEvaluating Color Classification...")
         clf_lr_color = train_clf_lr_CUB_multi_labelTypes(
@@ -2251,7 +2305,7 @@ def run_evaluation(epoch):
 
         # Log all validation/test samples, grouped by color
         if 'prediction_data' in accuracies_lc_color:
-            """ 
+            """
             In each batch, the length of color_data is 10 times the batch size due to duplicated 10 images for its 10 captions.
             """
             color_data = accuracies_lc_color['prediction_data']
@@ -2293,7 +2347,7 @@ def run_evaluation(epoch):
                 # 1. Create a list to hold the wandb.Image objects
                 images_to_log = []
                 color_label_str = color_map.get(color_id, "Unk")
-                for i in indices:  # [:100]:
+                for i in indices[:100]:
                     # 2. Get the image and labels for one sample
                     image = color_data['images'][i]  # *10 Get the first image of the 10 duplicates
 
@@ -2351,6 +2405,10 @@ def run_evaluation(epoch):
                 "Confidence/Hist_Color_Img_Z": wandb.Histogram(color_data['preds']['m0_z_confidence']),
             }, step=epoch)
 
+        del accuracies_lc_color
+        if "color_data" in locals():
+            del color_data
+        gc.collect()
     # ======== END: Latent Classifiers and Linear Classification ========
 
     # === FID Calculation ===
@@ -2367,12 +2425,18 @@ def run_evaluation(epoch):
             args.inception_path,
         )
 
-    # Color-label analysis hooks
-    # # # Latent space visualization
-    # # if epoch % visualize_epoch == 0:
+    #Color-label analysis hooks
+    # # Latent space visualization
+    # if epoch % visualize_epoch == 0:
+
+    gc.collect()
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     if args.enable_tSNE_UMAP:
-        visualize_ratio = 1.0  # Use full evaluation set by default.
+        #visualize_ratio = 1.0  # Use full evaluation set by default.
+        visualize_ratio = 0.2
 
 
         view0_z_cluster, view0_w_cluster_mis = visualize_latents_with_priors(
@@ -2691,7 +2755,7 @@ if __name__ == '__main__':
 
     else:
         # --- Training Mode ---
-        test_epoch_freq = 1
+        test_epoch_freq = 5
 
 
         def _collect_checkpoints(prefix):

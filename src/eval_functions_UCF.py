@@ -59,6 +59,8 @@ def train_clf_lr_CUB_multi_labelTypes(model, dl, device, args, condition_type=No
         "m1": {"us": [], "zs": [], "ws": []},
     }
     labels_all = []
+
+
     for dataT_lr in dl:
         data, labels_batch = unpack_data_CUBcluster8(dataT_lr, device=device)
         mask = None
@@ -94,6 +96,7 @@ def train_clf_lr_CUB_multi_labelTypes(model, dl, device, args, condition_type=No
                 latent_rep[f"m{v}"]["zs"].append(zs_v_filtered.cpu().data.numpy())
                 latent_rep[f"m{v}"]["ws"].append(ws_v_filtered.cpu().data.numpy())
 
+
     gt = np.concatenate(labels_all, axis=0)
     if gt.shape[0] == 0:
         print("Warning: No valid samples found for training the classifier after filtering. Returning None.")
@@ -101,15 +104,22 @@ def train_clf_lr_CUB_multi_labelTypes(model, dl, device, args, condition_type=No
 
     clf_lr = {}
     for v, _ in enumerate(model.vaes):
+
         latent_rep_u = np.concatenate(latent_rep[f"m{v}"]["us"], axis=0)
         latent_rep_w = np.concatenate(latent_rep[f"m{v}"]["ws"], axis=0)
         latent_rep_z = np.concatenate(latent_rep[f"m{v}"]["zs"], axis=0)
+
+
         clf_lr_rep_u = LogisticRegression(random_state=0, solver="lbfgs", max_iter=1000)
         clf_lr_rep_z = LogisticRegression(random_state=0, solver="lbfgs", max_iter=1000)
         clf_lr_rep_w = LogisticRegression(random_state=0, solver="lbfgs", max_iter=1000)
+
+
         clf_lr_rep_u.fit(latent_rep_u, gt.ravel()); clf_lr[f"m{v}_u"] = clf_lr_rep_u
         clf_lr_rep_w.fit(latent_rep_w, gt.ravel()); clf_lr[f"m{v}_w"] = clf_lr_rep_w
         clf_lr_rep_z.fit(latent_rep_z, gt.ravel()); clf_lr[f"m{v}_z"] = clf_lr_rep_z
+
+
     return clf_lr
 
 
@@ -167,7 +177,11 @@ def linear_latent_classification_CUB_multi_labelTypes(model, test_loader, clf_lr
                     lr_acc_m1_z.append(np.mean(accuracies["m1_z"]))
                     lr_acc_all_z.append(np.mean(accuracies["all_z"]))
 
-                collected_data["images"].append(filtered_data[0].cpu())
+                images_cpu = filtered_data[0].detach().cpu()
+                if images_cpu.shape[1] == 3:
+                    images_cpu = (images_cpu.clamp(0, 1).mul(255).to(torch.uint8))
+                collected_data["images"].append(images_cpu)
+
                 collected_data["is_ambiguous"].append(np.full(len(labels_batch_for_clf), is_ambiguous))
                 collected_data["gts"].append(predictions["ground_truths"])
                 collected_data["dataset_indices"].append(dataset_indices[mask].cpu().numpy())
@@ -517,10 +531,15 @@ def cub_self_and_cross_modal_generation_eval(
                 input_data = data[r][:num]
                 #if model.params.use_pretrain_feats:
                 if (model.params.use_pretrain_feats and getattr(model.params,"image_encoder_arch","cnn") == "cnn"):
-                    vae_device = next(model.pretrained_vae.parameters()).device
-                    input_data = model.pretrained_vae.decode(
-                        (input_data / 0.18215).to(vae_device)
-                    ).sample
+                    vae_param = next(model.pretrained_vae.parameters())
+
+                    input_data = input_data.to(device=vae_param.device, dtype=vae_param.dtype)
+
+                    input_data = input_data / 0.18215
+
+                    input_data = model.pretrained_vae.decode(input_data).sample
+
+
                     input_data = input_data.add(1).div(2).clamp(0, 1)
                 input_data = input_data.cpu()
             for o, recon in enumerate(recons_list):
@@ -595,10 +614,15 @@ def cub_self_and_cross_modal_generation_eval(
                 input_data = data[r][:num]
                 #if model.params.use_pretrain_feats:
                 if (model.params.use_pretrain_feats and getattr(model.params, "image_encoder_arch","cnn") == "cnn"):
-                    vae_device = next(model.pretrained_vae.parameters()).device
-                    input_data = model.pretrained_vae.decode(
-                        (input_data / 0.18215).to(vae_device)
-                    ).sample
+                    vae_param = next(model.pretrained_vae.parameters())
+
+                    input_data = input_data.to(device=vae_param.device, dtype=vae_param.dtype)
+
+                    input_data = input_data / 0.18215
+
+                    input_data = model.pretrained_vae.decode(input_data).sample
+
+
                     input_data = input_data.add(1).div(2).clamp(0, 1)
                 input_data = input_data.cpu()
             for o, recon in enumerate(recons_list):
@@ -631,15 +655,57 @@ def cub_self_and_cross_modal_generation_eval(
         )
 
         def _prepare_for_display(mod_idx, batch_tensor):
+
+            # Text modality
             if mod_idx == 1:
-                return _plot_sentences_as_tensor(model, batch_tensor).cpu()
+                return _plot_sentences_as_tensor(
+                    model,
+                    batch_tensor
+                ).cpu()
+
             processed = batch_tensor
-            if mod_idx == 0 and model.params.use_pretrain_feats:
-                vae_device = next(model.pretrained_vae.parameters()).device
-                processed = model.pretrained_vae.decode(
-                    (processed / 0.18215).to(vae_device)
-                ).sample
-                processed = processed.add(1).div(2).clamp(0, 1)
+
+            # Image modality
+            if mod_idx == 0:
+
+                # Works for both [C,H,W] and [B,C,H,W]
+                channels = processed.shape[-3]
+
+                # SD-VAE latent -> decode to RGB
+                if channels == 4:
+                    vae_param = next(
+                        model.pretrained_vae.parameters()
+                    )
+
+                    processed = processed.to(
+                        device=vae_param.device,
+                        dtype=vae_param.dtype,
+                    )
+
+                    processed = processed / 0.18215
+
+                    processed = model.pretrained_vae.decode(
+                        processed
+                    ).sample
+
+                    processed = (
+                        processed
+                        .add(1)
+                        .div(2)
+                        .clamp(0, 1)
+                    )
+
+                # Already RGB (SigLIP input)
+                elif channels == 3:
+                    processed = processed.clamp(0, 1)
+
+                else:
+                    raise ValueError(
+                        f"Unexpected image tensor shape in "
+                        f"_prepare_for_display: "
+                        f"{tuple(processed.shape)}"
+                    )
+
             return processed.cpu()
 
         prepared_inputs = []
@@ -803,10 +869,15 @@ def cub_self_and_cross_modal_generation_eval(
                 input_data = data[r][:num]
                 #if model.params.use_pretrain_feats:
                 if (model.params.use_pretrain_feats and getattr(model.params, "image_encoder_arch","cnn") == "cnn"):
-                    vae_device = next(model.pretrained_vae.parameters()).device
-                    input_data = model.pretrained_vae.decode(
-                        (input_data / 0.18215).to(vae_device)
-                    ).sample
+                    vae_param = next(model.pretrained_vae.parameters())
+
+                    input_data = input_data.to(device=vae_param.device,dtype=vae_param.dtype)
+
+                    input_data = input_data / 0.18215
+
+                    input_data = model.pretrained_vae.decode(input_data).sample
+
+
                     input_data = input_data.add(1).div(2).clamp(0, 1)
                 input_data = input_data.cpu()
             for o, recon in enumerate(recons_list):

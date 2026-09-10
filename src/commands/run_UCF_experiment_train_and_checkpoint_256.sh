@@ -39,7 +39,7 @@ fi
 # Model hyperparameters (Appendix C.2: 50 epochs; λ1=40, λ2=10, diffusion 0.1)
 BATCH=4
 K=1
-EPOCHS=150
+EPOCHS=50
 SEED=2
 NUM_WORKERS=4
 
@@ -62,11 +62,12 @@ LV_MIN_DIST=0.05
 thres_deg=0.0
 
 ENABLE_TEST_EPOCH=true
-ENABLE_UNCONDITIONAL_GENERATION=true
-ENABLE_LATENT_CLASSIFICATION=true
+ENABLE_QUALITATIVE_VISUALS=false
+ENABLE_UNCONDITIONAL_GENERATION=false
+ENABLE_LATENT_CLASSIFICATION=false
 USE_MEAN_FOR_LATENT_CLF=true
 ENABLE_FID=false
-ENABLE_TSNE_UMAP=true
+ENABLE_TSNE_UMAP=false
 USE_MEAN_IN_LATENT_VISUALIZATION=true
 
 DENOISER=""  # Example: "IDMVAE_Cross40_11_15_55_ep50_003-DiT-XL-2/checkpoints/0050000.pt"
@@ -167,7 +168,6 @@ CMD_ARGS_BASE=(
   "--gen_aug_sampling_scheme" "${gen_aug_scheme}"
   "--gen_aug_loss_type" "${GEN_AUG_TYPE}"
   "--note" "${RUN_NOTE}"
-  "--enable_tSNE_UMAP"
   "--tSNE_save_dir" "${tSNE_save_dir}"
   "--lv_umap_n_neighbors" "${LV_N_NEIGHBORS}"
   "--lv_umap_min_dist" "${LV_MIN_DIST}"
@@ -177,6 +177,7 @@ CMD_ARGS_BASE=(
   "--image_encoder_arch" "siglip"
   "--siglip_model_name" "google/siglip-base-patch16-256"
   "--siglip_lr" "1e-5"
+  "--amp"
   #"--resume"
   #"--resume_from_CPt_runId"
   #"--CPt_runId" "UCF_release_11_20_19/checkpoints/09-02_0_gpu0_ltCL_TD_lw0.1_K1_B256_Normal_Laplace_b1.0_10.0_40.0_256_256_s2"
@@ -197,9 +198,11 @@ if [ -n "${denoiser_ckpt_path}" ]; then
     "--save_eval_images_root" "${save_eval_images_root}"
   )
 fi
-
 if [ "${ENABLE_TEST_EPOCH}" = true ]; then
   CMD_ARGS_BASE+=("--enable_test_epoch")
+fi
+if [ "${ENABLE_QUALITATIVE_VISUALS}" = true ]; then
+  CMD_ARGS_BASE+=("--enable_qualitative_visuals")
 fi
 if [ "${ENABLE_UNCONDITIONAL_GENERATION}" = true ]; then
   CMD_ARGS_BASE+=("--enable_unconditional_generation")
