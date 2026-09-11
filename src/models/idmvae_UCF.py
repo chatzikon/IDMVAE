@@ -40,13 +40,38 @@ class UCF_Image_Captions(IDMVAE):
         self.img_size_original = params.img_size_original
         self.text2img_ratio = params.text2img_ratio
         self.fontsize = params.fontsize
-        denoiser_device = next(self.pretrained_vae.parameters()).device
-        (
-            self.denoiser_model,
-            self.denoiser_diffusion,
-            self.denoiser_device,
-            self.denoiser_condition_label,
-        ) = setup_pretrained_denoiser(self.params, denoiser_device)
+
+        image_decoder_arch = getattr(
+            params,
+            "image_decoder_arch",
+            "cnn",
+        )
+
+        if image_decoder_arch == "vitmae":
+
+            # ViT-MAE reconstructs RGB directly.
+            # The pretrained DiT denoiser expects SD-VAE latents
+            # and therefore is not compatible with this branch.
+            self.denoiser_model = None
+            self.denoiser_diffusion = None
+            self.denoiser_device = None
+            self.denoiser_condition_label = None
+
+        else:
+
+            if self.pretrained_vae is not None:
+                # Legacy SD-VAE latent reconstruction branch.
+                denoiser_device = next(self.pretrained_vae.parameters()).device
+            else:
+                # RGB ViT-MAE branch:
+                # there are no SD-VAE latents to denoise.
+                self.denoiser_model = None
+                self.denoiser_diffusion = None
+                self.denoiser_device = None
+                self.denoiser_condition_label = None
+
+            (self.denoiser_model,self.denoiser_diffusion, self.denoiser_device,self.denoiser_condition_label)\
+                = setup_pretrained_denoiser(self.params, denoiser_device)
 
         self.enable_denoiser_outputs = self._has_denoiser()
         self.last_denoised_prior_grids = None
@@ -58,7 +83,14 @@ class UCF_Image_Captions(IDMVAE):
         self.last_denoised_posterior_extended_grids = None
 
     def _has_denoiser(self):
-        return has_pretrained_denoiser(self.denoiser_model, self.denoiser_diffusion)
+
+        if self.denoiser_model is None:
+            return False
+
+        if self.denoiser_diffusion is None:
+            return False
+
+        return has_pretrained_denoiser(self.denoiser_model,self.denoiser_diffusion)
 
     def _run_denoiser(self, noisy_latents):
         return run_pretrained_denoiser(

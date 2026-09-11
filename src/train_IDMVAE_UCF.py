@@ -128,12 +128,21 @@ parser.add_argument('--image_encoder_arch',type=str,choices=['cnn', 'siglip'],de
 parser.add_argument('--siglip_model_name',type=str,default='google/siglip-base-patch16-256')
 parser.add_argument('--siglip_lr',type=float, default=1e-5)
 
-parser.add_argument(
-    '--amp',
-    action='store_true',
-    default=False,
-    help='Use CUDA automatic mixed precision (BF16).'
-)
+parser.add_argument('--image_decoder_arch',type=str, choices=['cnn', 'vitmae'], default='cnn')
+parser.add_argument('--vitmae_model_name',type=str,default='facebook/vit-mae-base')
+parser.add_argument('--vitmae_lr',type=float,default=1e-5)
+parser.add_argument('--vitmae_cond_tokens_per_latent',type=int, default=4)
+parser.add_argument('--vitmae_adapter_heads',type=int,default=12)
+parser.add_argument('--vitmae_adapter_mlp_ratio',type=float,default=4.0)
+
+
+parser.add_argument("--text_decoder_arch",type=str,choices=["cnn", "bart"],default="cnn")
+parser.add_argument("--bart_model_name",type=str,default="facebook/bart-base")
+parser.add_argument("--bart_lr",type=float,default=1e-5)
+parser.add_argument("--bart_memory_tokens_per_latent",type=int,default=4)
+
+parser.add_argument('--amp',action='store_true',default=False,
+    help='Use CUDA automatic mixed precision (BF16).')
 
 parser.add_argument("--vae", type=str, choices=["ema", "mse"], default="mse")
 parser.add_argument('--patch_size', type=int, default=2,
@@ -282,27 +291,53 @@ parser.add_argument('--save_eval_images_root', type=str, default='',
 # args
 args = parser.parse_args()
 
+rgb_decoder_mode = (args.image_decoder_arch == "vitmae")
+
 
 # ---------------------------------------------------------
 # Validate SigLIP configuration
 # ---------------------------------------------------------
-if args.image_encoder_arch == 'siglip':
+if args.image_encoder_arch == "siglip":
 
-    if not args.use_pretrain_feats:
-        parser.error(
-            "SigLIP mode still requires --use_pretrain_feats "
-            "because the image decoder reconstructs SD-VAE latents."
-        )
+    if args.image_decoder_arch == "cnn":
 
-    if args.img_size != 32:
-        parser.error(
-            "Existing image decoder requires --img_size 32."
-        )
+        # Existing SigLIP + SD-VAE-latent decoder.
+        if not args.use_pretrain_feats:
+            parser.error(
+                "SigLIP + CNN decoder requires "
+                "--use_pretrain_feats because the CNN "
+                "decoder reconstructs SD-VAE latents."
+            )
 
-    if args.img_channels != 4:
-        parser.error(
-            "Existing image decoder requires --img_channels 4."
-        )
+        if args.img_size != 32:
+            parser.error(
+                "SigLIP + CNN decoder requires "
+                "--img_size 32."
+            )
+
+        if args.img_channels != 4:
+            parser.error(
+                "SigLIP + CNN decoder requires "
+                "--img_channels 4."
+            )
+
+    elif args.image_decoder_arch == "vitmae":
+
+        # New branch: completely RGB based.
+        if args.use_pretrain_feats:
+            parser.error(
+                "SigLIP + ViT-MAE reconstructs RGB directly. "
+                "Do not use --use_pretrain_feats."
+            )
+
+if (
+    args.image_decoder_arch == "vitmae"
+    and args.image_encoder_arch != "siglip"
+):
+    parser.error(
+        "The ViT-MAE decoder experiment currently expects "
+        "--image_encoder_arch siglip."
+    )
 
 
 
@@ -342,7 +377,7 @@ utils.PDB_ENABLED = args.debug_pdb
 torch.manual_seed(args.seed)
 np.random.seed(args.seed)
 torch.backends.cudnn.benchmark = False
-torch.use_deterministic_algorithms(True)
+torch.use_deterministic_algorithms(True, warn_only=True)
 
 # CUDA stuff
 args.cuda = not args.no_cuda and torch.cuda.is_available()
@@ -391,8 +426,16 @@ elif args.develop:
     )
 else:
     runId = (
-        f"{args.note}_K{args.K}_B{args.batch_size}_{args.priorposterior}_{args.likelihood}_b{args.beta}_"
-        f"{args.gen_aug_loss_scale}_{args.cross_mi_loss_scale}_{args.z_alignment_loss_scale}"
+        f"{args.note}_"
+        f"IE{args.image_encoder_arch}_"
+        f"ID{args.image_decoder_arch}_"
+        f"TD{args.text_decoder_arch}_"
+        f"K{args.K}_B{args.batch_size}_"
+        f"{args.priorposterior}_{args.likelihood}_"
+        f"b{args.beta}_"
+        f"{args.gen_aug_loss_scale}_"
+        f"{args.cross_mi_loss_scale}_"
+        f"{args.z_alignment_loss_scale}_"
         f"{args.latent_dim_w}_{args.latent_dim_z}_"
         f"s{args.seed}"
     )
@@ -413,41 +456,73 @@ runPath = os.path.join(str(experiment_dir), runId)
 
 # Optimizer
 print("Using Adam optimizer.")
-if args.image_encoder_arch == "siglip":
+siglip_params = []
+vitmae_params = []
+other_params = []
 
-    siglip_params = []
-    other_params = []
+for name, p in model.named_parameters():
 
-    for name, p in model.named_parameters():
+    if not p.requires_grad:
+        continue
 
-        if not p.requires_grad:
-            continue
+    if (
+        args.image_encoder_arch == "siglip"
+        and "vaes.0.enc.backbone." in name
+    ):
 
-        if "vaes.0.enc.backbone." in name:
-            siglip_params.append(p)
-        else:
-            other_params.append(p)
+        siglip_params.append(p)
+
+    elif (
+        args.image_decoder_arch == "vitmae"
+        and "vaes.0.dec.decoder." in name
+    ):
+
+        # ONLY pretrained MAE decoder.
+        vitmae_params.append(p)
+
+    else:
+
+        # Includes:
+        # - IDMVAE posterior heads
+        # - ViT-MAE adapter
+        # - w/z projections
+        # - MI components
+        # - text VAE
+        # - etc.
+        other_params.append(p)
+
+
+param_groups = []
+
+if siglip_params:
+
+    param_groups.append({
+        "params": siglip_params,
+        "lr": args.siglip_lr,
+    })
+
+if vitmae_params:
+
+    param_groups.append({
+        "params": vitmae_params,
+        "lr": args.vitmae_lr,
+    })
+
+if other_params:
+
+    param_groups.append({
+        "params": other_params,
+        "lr": 1e-3,
+    })
+
+
+optimizer = optim.Adam(
+    param_groups,
+    amsgrad=True,
+)
 
 
 
-    optimizer = optim.Adam(
-        [
-            {
-                "params": siglip_params,
-                "lr": args.siglip_lr,
-            },
-            {
-                "params": other_params,
-                "lr": 1e-3,
-            },
-        ],
-        amsgrad=True,
-    )
-
-
-
-else:
-    optimizer = optim.Adam(filter(lambda p: p.requires_grad,model.parameters()),lr=1e-3,amsgrad=True)
 
 # Checkpoint and resuming logic
 start_epoch = 1
@@ -603,11 +678,25 @@ if args.dataset == 'UCF':
 
         dataset_use_pretrain_feats = use_pretrain_feats
 
+    if rgb_decoder_mode:
 
-    if use_pretrain_feats:
+        # ViT-MAE defines its own RGB reconstruction size.
+        # facebook/vit-mae-base -> 3x224x224.
+        #
+        # args.img_size / img_channels are not used to define
+        # the ViT-MAE decoder output.
+
+        pass
+
+    elif use_pretrain_feats:
+
+        # Legacy SD-VAE latent branch.
         assert args.img_size == 32
         assert args.img_channels == 4
+
     else:
+
+        # Legacy raw-RGB CNN branch.
         assert args.img_size == 64
         assert args.img_channels == 3
 
@@ -616,8 +705,7 @@ if args.dataset == 'UCF':
     vae = None
     pretrained_vae = None
 
-
-    if use_pretrain_feats:
+    if (args.use_pretrain_feats and args.image_decoder_arch != "vitmae"):
         assert torch.cuda.is_available()
         #device = torch.device("cuda")
         #sd_vae_ft = args.vae if hasattr(args, "vae") else "mse"
@@ -625,19 +713,8 @@ if args.dataset == 'UCF':
         # vae = AutoencoderKL.from_pretrained(
         #     f"stabilityai/sd-vae-ft-{sd_vae_ft}"
         # ).to(device)
-        vae=model.pretrained_vae
-        pretrained_vae = vae
-
-
-        vae.eval()
-        for p in vae.parameters():
-            p.requires_grad = False
-
-        # Reuse the same object for evaluation/visualization.
-
-    # else:
-    #     # Pretrained VAE for image feature extraction
-    #     pretrained_vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{args.vae}").to(device)
+        vae = model.pretrained_vae
+        pretrained_vae = model.pretrained_vae
 
 
     # Load image, caption, and label data
@@ -797,6 +874,8 @@ def train(epoch):
     for i, dataT in enumerate(train_loader):
         # CUBICC:
         data, label = unpack_data_CUBcluster8(dataT, device=device)
+
+
 
 
 
@@ -1380,6 +1459,8 @@ def test(epoch):
         for _, dataT in enumerate(test_time_loader):
             data, _ = unpack_data_CUBcluster8(dataT, device=device)
             bs = data[0].size(0)
+
+
 
             with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
                 (loss, recon_kl_sum_loss, llik_recon_loss, kl_div_loss, cross_mi_loss,

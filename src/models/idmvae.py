@@ -29,8 +29,35 @@ class IDMVAE(nn.Module):
         ])
         device = torch.device("cuda" if torch.cuda.is_available() and not params.no_cuda else "cpu")
 
-        vae_variant = getattr(params, "vae", "mse")
-        self.pretrained_vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{vae_variant}").to(device) # ema or mse (default)
+        self.image_decoder_arch = getattr(
+            params,
+            "image_decoder_arch",
+            "cnn",
+        )
+
+        # ---------------------------------------------------------
+        # Stable-Diffusion VAE
+        #
+        # Needed only by the legacy SD-VAE latent-space branch.
+        #
+        # ViT-MAE reconstructs RGB directly, therefore loading
+        # SD-VAE would only waste VRAM.
+        # ---------------------------------------------------------
+
+        if ( self.use_pretrain_feats and self.image_decoder_arch != "vitmae"):
+
+            vae_variant = getattr(params, "vae","mse")
+
+            self.pretrained_vae = ( AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-{vae_variant}").to(device))
+
+            self.pretrained_vae.eval()
+
+            for p in self.pretrained_vae.parameters():
+                p.requires_grad_(False)
+
+        else:
+
+            self.pretrained_vae = None
 
         # Priors are currently fixed here; make configurable via params if needed.
         self.pz_params = self._init_prior_params(params.latent_dim_z,
@@ -156,12 +183,26 @@ class IDMVAE(nn.Module):
 
     def _decode_latents_to_pixels(self, latents):
         """
-        Decode SD-VAE latents and rescale results from [-1, 1] back to [0, 1].
+        Convert image-decoder output to displayable RGB.
+
+        Legacy SD-VAE branch:
+            [4,32,32] SD latent -> RGB
+
+        ViT-MAE branch:
+            decoder output is already RGB.
         """
-        assert self.use_pretrain_feats
+
+        if self.image_decoder_arch == "vitmae":
+            # ViT-MAE decoder already outputs RGB.
+            return latents.clamp(0.0, 1.0)
+
+        if self.pretrained_vae is None:
+            raise RuntimeError("_decode_latents_to_pixels() was called without an available SD-VAE.")
+
         device = next(self.pretrained_vae.parameters()).device
-        decoded = self.pretrained_vae.decode((latents.to(device)) / 0.18215).sample
-        return decoded.add(1).div(2).clamp(0, 1)
+
+        decoded = self.pretrained_vae.decode(latents.to(device) / 0.18215).sample
+        return (decoded.add(1).div(2).clamp(0.0, 1.0))
 
     def self_and_cross_modal_generation_forward(self, data, K=1):
         """
