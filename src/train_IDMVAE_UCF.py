@@ -19,6 +19,7 @@ import traceback
 import logging
 import bitsandbytes as bnb
 
+
 # Deterministic behavior:
 # https://pytorch.org/docs/stable/notes/randomness.html
 # https://docs.nvidia.com/cuda/cublas/index.html#cublasApi_reproducibility
@@ -51,6 +52,8 @@ os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # Set before importing torch
 #
 # logging.getLogger("matplotlib.image").addHandler(TracebackHandler())
 
+
+
 import glob
 import re
 import shutil
@@ -70,6 +73,395 @@ from utils import Logger, save_model_light, get_mean
 from utils import unpack_data_CUBcluster8, get_test_CUBcluster8_samples
 import textwrap
 import torchvision.transforms as transforms
+
+@torch.inference_mode()
+def diagnose_bart_latent_usage(
+    max_batches=5,
+):
+    """
+    Diagnose whether the BART decoder uses caption-specific
+    information from the text posterior.
+
+    IMPORTANT:
+    Teacher forcing is intentional here.
+    This is NOT generation evaluation.
+
+    We compare BART NLL when it receives:
+        - correct posterior mean
+        - shuffled posterior mean
+        - correct posterior sample
+        - shuffled posterior sample
+        - prior sample
+
+    If the latent contains caption-specific information,
+    shuffling it should increase NLL.
+    """
+
+    if getattr(
+        model.params,
+        "text_decoder_arch",
+        "cnn",
+    ) != "bart":
+        print(
+            "Skipping BART latent diagnostic: "
+            "text decoder is not BART."
+        )
+        return
+
+    print(
+        "\n=== BART LATENT DIAGNOSTIC ==="
+    )
+
+    model.eval()
+
+    text_vae = model.vaes[1]
+
+    W = model.params.latent_dim_w
+    Z = model.params.latent_dim_z
+
+    pad_id = text_vae.dec.pad_token_id
+
+    # ---------------------------------------------------------
+    # Store posterior statistics across several minibatches.
+    # ---------------------------------------------------------
+
+    all_w_means = []
+    all_z_means = []
+
+    all_w_scales = []
+    all_z_scales = []
+
+    nll_sums = {
+        "mean_correct": 0.0,
+        "mean_shuffled": 0.0,
+        "sample_correct": 0.0,
+        "sample_shuffled": 0.0,
+        "prior": 0.0,
+    }
+
+    token_count = 0
+
+    def add_nll(
+        name,
+        latent,
+        target_ids,
+    ):
+
+        px = text_vae.dec(
+            latent,
+            target_ids,
+        )
+
+        # [1,B,L]
+        token_log_prob = px.log_prob(
+            target_ids
+        )
+
+        nll_sums[name] += (
+            -token_log_prob.sum().item()
+        )
+
+    # Use the currently selected split.
+    loader = test_time_loader
+
+    for batch_idx, dataT in enumerate(loader):
+
+        if batch_idx >= max_batches:
+            break
+
+        data, _ = unpack_data_CUBcluster8(
+            dataT,
+            device=device,
+        )
+
+        captions = data[1]
+        target_ids = data[2]
+
+        # -----------------------------------------------------
+        # q(u_txt | caption)
+        # -----------------------------------------------------
+
+        qu_params = text_vae.enc(
+            captions
+        )
+
+        qu_txt = text_vae.qu_x(
+            *qu_params
+        )
+
+        mean = qu_txt.mean
+        scale = qu_txt.scale
+
+        w_mean, z_mean = torch.split(
+            mean,
+            [W, Z],
+            dim=-1,
+        )
+
+        w_scale, z_scale = torch.split(
+            scale,
+            [W, Z],
+            dim=-1,
+        )
+
+        all_w_means.append(
+            w_mean.cpu()
+        )
+
+        all_z_means.append(
+            z_mean.cpu()
+        )
+
+        all_w_scales.append(
+            w_scale.cpu()
+        )
+
+        all_z_scales.append(
+            z_scale.cpu()
+        )
+
+        B = mean.size(0)
+
+        # -----------------------------------------------------
+        # Correct posterior mean
+        # -----------------------------------------------------
+
+        u_mean = mean.unsqueeze(0)
+
+        # -----------------------------------------------------
+        # Shuffle samples within minibatch.
+        # -----------------------------------------------------
+
+        perm = torch.randperm(
+            B,
+            device=mean.device,
+        )
+
+        u_mean_shuffled = (
+            u_mean[:, perm]
+        )
+
+        # -----------------------------------------------------
+        # Posterior sample
+        # -----------------------------------------------------
+
+        u_sample = qu_txt.rsample(
+            torch.Size([1])
+        )
+
+        u_sample_shuffled = (
+            u_sample[:, perm]
+        )
+
+        # -----------------------------------------------------
+        # Prior sample
+        # -----------------------------------------------------
+
+        p_w = model.get_simple_prior_w(
+            view=1,
+            aux=False,
+        )
+
+        p_z = model.get_simple_prior_z()
+
+        w_prior = p_w.rsample(
+            torch.Size([1, B])
+        ).squeeze(2)
+
+        z_prior = p_z.rsample(
+            torch.Size([1, B])
+        ).squeeze(2)
+
+        u_prior = torch.cat(
+            (
+                w_prior,
+                z_prior,
+            ),
+            dim=-1,
+        )
+
+        # -----------------------------------------------------
+        # NLL comparisons
+        # -----------------------------------------------------
+
+        add_nll(
+            "mean_correct",
+            u_mean,
+            target_ids,
+        )
+
+        add_nll(
+            "mean_shuffled",
+            u_mean_shuffled,
+            target_ids,
+        )
+
+        add_nll(
+            "sample_correct",
+            u_sample,
+            target_ids,
+        )
+
+        add_nll(
+            "sample_shuffled",
+            u_sample_shuffled,
+            target_ids,
+        )
+
+        add_nll(
+            "prior",
+            u_prior,
+            target_ids,
+        )
+
+        token_count += (
+            target_ids != pad_id
+        ).sum().item()
+
+    # ---------------------------------------------------------
+    # Aggregate posterior statistics
+    # ---------------------------------------------------------
+
+    w_means = torch.cat(
+        all_w_means,
+        dim=0,
+    )
+
+    z_means = torch.cat(
+        all_z_means,
+        dim=0,
+    )
+
+    w_scales = torch.cat(
+        all_w_scales,
+        dim=0,
+    )
+
+    z_scales = torch.cat(
+        all_z_scales,
+        dim=0,
+    )
+
+    def between_sample_std(x):
+
+        return (
+            x.std(
+                dim=0,
+                unbiased=False,
+            )
+            .mean()
+            .item()
+        )
+
+    # ---------------------------------------------------------
+    # Print posterior statistics
+    # ---------------------------------------------------------
+
+    print(
+        "w_txt |mean|:",
+        w_means.abs().mean().item(),
+    )
+
+    print(
+        "w_txt between-sample std:",
+        between_sample_std(
+            w_means
+        ),
+    )
+
+    print(
+        "z_txt |mean|:",
+        z_means.abs().mean().item(),
+    )
+
+    print(
+        "z_txt between-sample std:",
+        between_sample_std(
+            z_means
+        ),
+    )
+
+    print(
+        "w_txt scale mean:",
+        w_scales.mean().item(),
+    )
+
+    print(
+        "w_txt scale between-sample std:",
+        between_sample_std(
+            w_scales
+        ),
+    )
+
+    print(
+        "z_txt scale mean:",
+        z_scales.mean().item(),
+    )
+
+    print(
+        "z_txt scale between-sample std:",
+        between_sample_std(
+            z_scales
+        ),
+    )
+
+    # ---------------------------------------------------------
+    # NLL / token
+    # ---------------------------------------------------------
+
+    results = {
+        key:
+        value / max(token_count, 1)
+
+        for key, value
+        in nll_sums.items()
+    }
+
+    print(
+        "Teacher-forced NLL/token "
+        "- correct text mean:",
+        results["mean_correct"],
+    )
+
+    print(
+        "Teacher-forced NLL/token "
+        "- shuffled text mean:",
+        results["mean_shuffled"],
+    )
+
+    print(
+        "Mean shuffle NLL increase:",
+        results["mean_shuffled"]
+        - results["mean_correct"],
+    )
+
+    print(
+        "Teacher-forced NLL/token "
+        "- posterior SAMPLE:",
+        results["sample_correct"],
+    )
+
+    print(
+        "Teacher-forced NLL/token "
+        "- shuffled posterior SAMPLE:",
+        results["sample_shuffled"],
+    )
+
+    print(
+        "Teacher-forced NLL/token "
+        "- PRIOR sample:",
+        results["prior"],
+    )
+
+    print(
+        "Sample shuffle NLL increase:",
+        results["sample_shuffled"]
+        - results["sample_correct"],
+    )
+
+    print(
+        "=== END BART LATENT DIAGNOSTIC ===\n"
+    )
 
 def first_pair_position_per_image(dataset_indices):
     """
@@ -140,6 +532,19 @@ parser.add_argument("--text_decoder_arch",type=str,choices=["cnn", "bart"],defau
 parser.add_argument("--bart_model_name",type=str,default="facebook/bart-base")
 parser.add_argument("--bart_lr",type=float,default=1e-5)
 parser.add_argument("--bart_memory_tokens_per_latent",type=int,default=4)
+parser.add_argument("--bart_max_length",type=int,default=64)
+
+
+parser.add_argument(
+    "--bart_token_dropout",
+    type=float,
+    default=0.0,
+    help=(
+        "Probability of replacing BART teacher-forcing "
+        "decoder input tokens with <mask>. "
+        "Targets are not modified."
+    ),
+)
 
 parser.add_argument('--amp',action='store_true',default=False,
     help='Use CUDA automatic mixed precision (BF16).')
@@ -259,6 +664,16 @@ parser.add_argument(
     choices=['train', 'eval', 'test'],
     help="Dataset split used for evaluation: one of {'train','eval','test'}.",
 )
+
+parser.add_argument(
+    "--enable_bart_latent_diagnostics",
+    action="store_true",
+    default=False,
+    help=(
+        "Run BART posterior-collapse and "
+        "latent-usage diagnostics."
+    ),
+)
 #enable_qualitative_visuals
 # Evaluation metrics
 parser.add_argument('--enable_test_epoch', action='store_true', default=False,
@@ -291,15 +706,17 @@ parser.add_argument('--save_eval_images_root', type=str, default='',
 # args
 args = parser.parse_args()
 
+image_encoder_arch = args.image_encoder_arch
+image_decoder_arch = args.image_decoder_arch
+text_decoder_arch = args.text_decoder_arch
+
 rgb_decoder_mode = (args.image_decoder_arch == "vitmae")
 
 
 # ---------------------------------------------------------
 # Validate SigLIP configuration
 # ---------------------------------------------------------
-if args.image_encoder_arch == "siglip":
-
-    if args.image_decoder_arch == "cnn":
+if args.image_encoder_arch == "siglip" and args.image_decoder_arch == "cnn":
 
         # Existing SigLIP + SD-VAE-latent decoder.
         if not args.use_pretrain_feats:
@@ -321,7 +738,7 @@ if args.image_encoder_arch == "siglip":
                 "--img_channels 4."
             )
 
-    elif args.image_decoder_arch == "vitmae":
+elif image_encoder_arch == "siglip" and image_decoder_arch == "vitmae":
 
         # New branch: completely RGB based.
         if args.use_pretrain_feats:
@@ -330,15 +747,15 @@ if args.image_encoder_arch == "siglip":
                 "Do not use --use_pretrain_feats."
             )
 
-if (
-    args.image_decoder_arch == "vitmae"
-    and args.image_encoder_arch != "siglip"
-):
+# ---------------------------------------------------------
+# ViT-MAE currently requires the SigLIP image encoder.
+# ---------------------------------------------------------
+elif image_decoder_arch == "vitmae":
+
     parser.error(
-        "The ViT-MAE decoder experiment currently expects "
+        "The ViT-MAE image decoder currently expects "
         "--image_encoder_arch siglip."
     )
-
 
 
 
@@ -459,6 +876,7 @@ print("Using Adam optimizer.")
 siglip_params = []
 vitmae_params = []
 other_params = []
+bart_params = []
 
 for name, p in model.named_parameters():
 
@@ -479,6 +897,14 @@ for name, p in model.named_parameters():
 
         # ONLY pretrained MAE decoder.
         vitmae_params.append(p)
+
+    elif (
+            args.text_decoder_arch == "bart"
+            and   (
+            "vaes.1.dec.decoder." in name or "vaes.1.dec.lm_head." in name
+            )
+    ):
+        bart_params.append(p)
 
     else:
 
@@ -515,6 +941,13 @@ if other_params:
         "lr": 1e-3,
     })
 
+
+if bart_params:
+
+    param_groups.append({
+        "params": bart_params,
+        "lr": args.bart_lr,
+    })
 
 optimizer = optim.Adam(
     param_groups,
@@ -833,6 +1266,8 @@ if args.dataset == 'UCF':
         **kwargs
     )
 
+
+
     # Select dataset/dataloader for evaluation.
     if args.test_time_dataset_state == "train":  # reconstruction verification: better->dataset is small, no change->architecture is weak
         test_time_dataset = train_cluster_dataset
@@ -843,6 +1278,8 @@ if args.dataset == 'UCF':
     if args.test_time_dataset_state == "test":
         test_time_dataset = test_cluster_dataset
         test_time_loader = test_cluster_loader
+
+
 
     # Create wrapper datasets for validation and testing
     # For Image View (View 0)
@@ -871,11 +1308,10 @@ else:
 def train(epoch):
     model.train()
     b_loss = 0
+
     for i, dataT in enumerate(train_loader):
         # CUBICC:
         data, label = unpack_data_CUBcluster8(dataT, device=device)
-
-
 
 
 
@@ -897,7 +1333,10 @@ def train(epoch):
         wandb.log({"Loss/train_gen_aug": gen_aug_loss}, step=epoch)
         wandb.log({"Loss/train_diffusion_loss": diffusion_loss.item()}, step=epoch)
 
+
         loss.backward()
+
+
         optimizer.step()
         b_loss += loss.item() * bs
         if args.print_freq > 0 and i % args.print_freq == 0:
@@ -984,10 +1423,10 @@ def evaluate_img2text(epoch):
             "metadata.json does not contain 'image_paths'."
         )
 
-    special_tokens = {
-        dataset.pad_token,
-        dataset.eos_token,
-    }
+    # special_tokens = {
+    #     dataset.pad_token,
+    #     dataset.eos_token,
+    # }
 
     # ------------------------------------------------------
     # Small helper to avoid duplicating caption decoding
@@ -1054,9 +1493,16 @@ def evaluate_img2text(epoch):
             # --------------------------------------------------
             # 1. Encode image through image modality VAE
             # --------------------------------------------------
-            _, _, img_us = img_vae(
-                images,
-                K=1
+            img_qu_params = img_vae.enc(
+                images
+            )
+
+            img_qu = img_vae.qu_x(
+                *img_qu_params
+            )
+
+            img_us = img_qu.rsample(
+                torch.Size([1])
             )
 
             # img_us:
@@ -1109,15 +1555,35 @@ def evaluate_img2text(epoch):
             # --------------------------------------------------
             # 4. Decode text
             # --------------------------------------------------
-            px_txt = text_vae.px_u(
-                *text_vae.dec(latents_txt)
-            )
+            if args.text_decoder_arch == "bart":
 
-            generated = (
-                get_mean(px_txt)
-                .squeeze(0)
-                .cpu()
-            )
+                generated_ids = text_vae.dec.generate(
+                    latents_txt,
+                    max_new_tokens=args.bart_max_length,
+                )
+
+                # [1,B,L] -> [B,L]
+                generated_ids = generated_ids.squeeze(0)
+
+                generated_texts = (
+                    text_vae.dec.tokenizer.batch_decode(
+                        generated_ids,
+                        skip_special_tokens=True,
+                        clean_up_tokenization_spaces=False,
+                    )
+                )
+
+            else:
+
+                px_txt = text_vae.px_u(
+                    *text_vae.dec(latents_txt)
+                )
+
+                generated = (
+                    get_mean(px_txt)
+                    .squeeze(0)
+                    .cpu()
+                )
 
             captions_cpu = captions.cpu()
 
@@ -1142,9 +1608,12 @@ def evaluate_img2text(epoch):
                     captions_cpu[i]
                 )
 
-                generated_caption = decode_caption(
-                    generated[i]
-                )
+                if args.text_decoder_arch == "bart":
+                    generated_caption = generated_texts[i].strip()
+                else:
+                    generated_caption = decode_caption(
+                        generated[i]
+                    )
 
                 # --------------------------------------------------
                 # Original metric-compatible files
@@ -1327,15 +1796,34 @@ def evaluate_text2text_mean(epoch):
             # ---------------------------------------------
             # 3. Decode the deterministic latent
             # ---------------------------------------------
-            px_txt = text_vae.px_u(
-                *text_vae.dec(latents_mean)
-            )
+            if args.text_decoder_arch == "bart":
 
-            reconstructed = (
-                get_mean(px_txt)
-                .squeeze(0)
-                .cpu()
-            )
+                generated_ids = text_vae.dec.generate(
+                    latents_mean,
+                    max_new_tokens=args.bart_max_length,
+                )
+
+                generated_ids = generated_ids.squeeze(0)
+
+                generated_texts = (
+                    text_vae.dec.tokenizer.batch_decode(
+                        generated_ids,
+                        skip_special_tokens=True,
+                        clean_up_tokenization_spaces=False,
+                    )
+                )
+
+            else:
+
+                px_txt = text_vae.px_u(
+                    *text_vae.dec(latents_mean)
+                )
+
+                reconstructed = (
+                    get_mean(px_txt)
+                    .squeeze(0)
+                    .cpu()
+                )
 
             captions_cpu = captions.cpu()
 
@@ -1375,28 +1863,36 @@ def evaluate_text2text_mean(epoch):
                 # ======================
                 # Reconstructed caption
                 # ======================
-                gen_indices = torch.argmax(
-                    reconstructed[i],
-                    dim=-1
-                ).numpy()
+                if args.text_decoder_arch == "bart":
 
-                gen_words = []
+                    generated_caption = generated_texts[i].strip()
 
-                for idx in gen_indices:
+                else:
 
-                    token = dataset.i2w.get(
-                        str(int(idx)),
-                        '<unk>'
-                    )
+                    gen_indices = torch.argmax(
+                        reconstructed[i],
+                        dim=-1
+                    ).numpy()
 
-                    if token == dataset.eos_token:
-                        break
+                    gen_words = []
 
-                    if token != dataset.pad_token:
-                        gen_words.append(token)
+                    for idx in gen_indices:
+
+                        token = dataset.i2w.get(
+                            str(int(idx)),
+                            '<unk>'
+                        )
+
+                        if token == dataset.eos_token:
+                            break
+
+                        if token != dataset.pad_token:
+                            gen_words.append(token)
+
+                    generated_caption = " ".join(gen_words)
 
                 refs[key] = " ".join(ref_words)
-                gens[key] = " ".join(gen_words)
+                gens[key] = generated_caption
 
     # ---------------------------------------------
     # Save JSON files
@@ -1719,11 +2215,12 @@ def _cub_test_epoch_qualitative_visuals(epoch):
                             lbl_cluster, lbl_color, lbl_category, img_id, dataset_index \
                                 = labels_list_of_tuples[n]
                             dir_label_str = color_map.get(int(lbl_color), "Unk")
-                            generated_caption = recon_triess_to_table_cluster[i][j][m][n]
-                            # Convert caption tensor back to text
-                            indices = torch.argmax(generated_caption, dim=-1).cpu().numpy()
-                            words = [i2w.get(str(idx), '<unk>') for idx in indices]
-                            gen_caption_i2w = ' '.join(word for word in words if word not in ['<pad>', '<eos>'])
+
+                            generated_caption = (recon_triess_to_table_cluster[i][j][m][n])
+
+                            gen_caption_i2w = decode_generated_caption(generated_caption)
+
+
                             # Wrap the raw caption text for better display
                             wrapped_gen_caption_i2w = '\n'.join(textwrap.wrap(gen_caption_i2w, width=66))
                             caption_log = (f"[Img->Cap]: input image + generated_caption + labels info\n"
@@ -1864,10 +2361,11 @@ def _cub_test_epoch_qualitative_visuals(epoch):
                                 = labels_list_of_tuples[n]
                             dir_label_str = color_map.get(int(lbl_color), "Unk")
 
-                            generated_caption = recon_triess_to_table_cluster[i][j][m][n]
-                            gen_indices = torch.argmax(generated_caption, dim=-1).cpu().numpy()
-                            gen_words = [i2w.get(str(idx), '<unk>') for idx in gen_indices]
-                            gen_caption_i2w = ' '.join(word for word in gen_words if word not in ['<pad>', '<eos>'])
+                            generated_caption = (recon_triess_to_table_cluster[i][j][m][n])
+
+                            gen_caption_i2w = decode_generated_caption(generated_caption)
+
+
                             wrapped_gen_caption_i2w = '\n'.join(textwrap.wrap(gen_caption_i2w, width=66))
                             caption_log = (f"[Cap->Cap]: corresp_image + input&gen_captions + labels info\n"
                                            f"Sample: ({m + 1},{n + 1}) | Index: {dataset_index} | ImgID: {img_id}\n"
@@ -2006,10 +2504,12 @@ def _cub_test_epoch_qualitative_visuals(epoch):
                                 = labels_list_of_tuples[n]
                             dir_label_str = color_map.get(int(lbl_color), "Unk")
 
-                            generated_caption = recon_triess_to_table_color[i][j][m][n]
-                            gen_indices = torch.argmax(generated_caption, dim=-1).cpu().numpy()
-                            gen_words = [i2w.get(str(idx), '<unk>') for idx in gen_indices]
-                            gen_caption_i2w = ' '.join(word for word in gen_words if word not in ['<pad>', '<eos>'])
+                            generated_caption = (recon_triess_to_table_color[i][j][m][n])
+
+                            gen_caption_i2w = decode_generated_caption(generated_caption)
+
+
+
                             wrapped_gen_caption_i2w = '\n'.join(textwrap.wrap(gen_caption_i2w, width=66))
                             caption_log = (f"[Cap->Cap]: corresp_image + input&gen_captions + labels info\n"
                                            f"Sample: ({m + 1},{n + 1}) | Index: {dataset_index} | ImgID: {img_id}\n"
@@ -2099,11 +2599,890 @@ def _cub_test_epoch_qualitative_visuals(epoch):
 
 
 
+def decode_generated_caption(generated_caption):
+    """
+    Decode a generated caption.
+
+    CNN decoder:
+        generated_caption: [L, custom_vocab_size]
+
+    BART decoder:
+        generated_caption: [L] BART token IDs
+    """
+
+    if args.text_decoder_arch == "bart":
+
+        token_ids = (
+            generated_caption
+            .detach()
+            .cpu()
+            .long()
+        )
+
+        return (
+            model.vaes[1]
+            .dec
+            .tokenizer
+            .decode(
+                token_ids,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )
+            .strip()
+        )
+
+    # Legacy CNN decoder
+    indices = (
+        torch.argmax(
+            generated_caption,
+            dim=-1,
+        )
+        .cpu()
+        .numpy()
+    )
+
+    words = [
+        i2w.get(str(idx), "<unk>")
+        for idx in indices
+    ]
+
+    return " ".join(
+        word
+        for word in words
+        if word not in ["<pad>", "<eos>"]
+    )
+
+from collections import Counter
+
+
+@torch.no_grad()
+def evaluate_bart_latent_diagnostics(
+    epoch,
+    nll_max_batches=5,
+    generation_max_samples=1024,
+    max_new_tokens=64,
+):
+    """
+    Diagnostic for BART posterior collapse / latent usage.
+
+    Uses the currently selected test_time_loader, so run with:
+
+        --test_time_dataset_state train
+
+    for TRAIN-set diagnostics, or:
+
+        --test_time_dataset_state eval
+
+    for held-out diagnostics.
+
+    IMPORTANT
+    ---------
+    Teacher forcing is used ONLY for the NLL latent-use diagnostic.
+
+    All A/B/C/D caption generation is fully autoregressive:
+        latent -> BART.generate()
+
+    Ground-truth BART tokens are never passed to generate().
+    """
+
+    if getattr(
+        model.params,
+        "text_decoder_arch",
+        "cnn",
+    ) != "bart":
+        raise RuntimeError(
+            "BART latent diagnostics require "
+            "text_decoder_arch='bart'."
+        )
+
+    print(
+        "\n"
+        "=============================================\n"
+        f"BART LATENT DIAGNOSTICS - EPOCH {epoch}\n"
+        f"SPLIT: {args.test_time_dataset_state}\n"
+        "============================================="
+    )
+
+    model.eval()
+
+    img_vae = model.vaes[0]
+    text_vae = model.vaes[1]
+
+    loader = test_time_loader
+
+    W = model.params.latent_dim_w
+    Z = model.params.latent_dim_z
+
+    tokenizer = text_vae.dec.tokenizer
+    pad_token_id = text_vae.dec.pad_token_id
+
+    # ============================================================
+    # PART 1
+    # Posterior variability + correct/shuffled latent NLL
+    # ============================================================
+
+    posterior_means = []
+    posterior_scales = []
+
+    nll_totals = {
+        "mean_correct": 0.0,
+        "mean_shuffled": 0.0,
+        "sample_correct": 0.0,
+        "sample_shuffled": 0.0,
+        "prior": 0.0,
+    }
+
+    token_totals = {
+        key: 0
+        for key in nll_totals
+    }
+
+    def accumulate_nll(
+        key,
+        latent,
+        target_ids,
+    ):
+        """
+        Teacher-forced BART NLL.
+
+        This is ONLY a diagnostic of whether BART uses the
+        supplied latent. It is NOT generation evaluation.
+        """
+
+        px = text_vae.dec(
+            latent,
+            target_ids,
+        )
+
+        # [K,B,L]
+        log_prob = px.log_prob(
+            target_ids
+        )
+
+        valid = (
+            target_ids
+            != pad_token_id
+        )
+
+        # K is 1 in these diagnostics.
+        num_valid = (
+            valid
+            .sum()
+            .item()
+        )
+
+        nll = (
+            -log_prob
+            .sum()
+            .item()
+        )
+
+        nll_totals[key] += nll
+        token_totals[key] += num_valid
+
+    for batch_idx, dataT in enumerate(loader):
+
+        if (
+            nll_max_batches is not None
+            and batch_idx >= nll_max_batches
+        ):
+            break
+
+        data, _ = unpack_data_CUBcluster8(
+            dataT,
+            device=device,
+        )
+
+        if len(data) < 3:
+            raise RuntimeError(
+                "BART diagnostics require data[2] "
+                "containing BART token IDs."
+            )
+
+        captions = data[1]
+        bart_ids = data[2]
+
+        # --------------------------------------------------------
+        # q(u_txt | caption)
+        # --------------------------------------------------------
+
+        qu_params = text_vae.enc(
+            captions
+        )
+
+        qu_txt = text_vae.qu_x(
+            *qu_params
+        )
+
+        mean_txt = qu_txt.mean
+
+        if not hasattr(
+            qu_txt,
+            "scale",
+        ):
+            raise RuntimeError(
+                "Expected text posterior distribution "
+                "to expose .scale."
+            )
+
+        scale_txt = qu_txt.scale
+
+        posterior_means.append(
+            mean_txt.detach().cpu()
+        )
+
+        posterior_scales.append(
+            scale_txt.detach().cpu()
+        )
+
+        B = mean_txt.size(0)
+
+        # --------------------------------------------------------
+        # Posterior MEAN
+        # --------------------------------------------------------
+
+        u_mean = mean_txt.unsqueeze(0)
+
+        permutation = torch.randperm(
+            B,
+            device=mean_txt.device,
+        )
+
+        u_mean_shuffled = (
+            u_mean[:, permutation, :]
+        )
+
+        # --------------------------------------------------------
+        # Posterior SAMPLE
+        # --------------------------------------------------------
+
+        u_sample = qu_txt.rsample(
+            torch.Size([1])
+        )
+
+        # IMPORTANT:
+        # same permutation idea:
+        # assign another caption's latent to this target.
+        u_sample_shuffled = (
+            u_sample[:, permutation, :]
+        )
+
+        # --------------------------------------------------------
+        # PRIOR SAMPLE
+        # --------------------------------------------------------
+
+        p_w = model.get_simple_prior_w(
+            view=1,
+            aux=False,
+        )
+
+        p_z = model.get_simple_prior_z()
+
+        w_prior = p_w.rsample(
+            torch.Size([1, B])
+        ).squeeze(2)
+
+        z_prior = p_z.rsample(
+            torch.Size([1, B])
+        ).squeeze(2)
+
+        u_prior = torch.cat(
+            (
+                w_prior,
+                z_prior,
+            ),
+            dim=-1,
+        )
+
+        # --------------------------------------------------------
+        # Teacher-forced latent-use diagnostic
+        # --------------------------------------------------------
+
+        accumulate_nll(
+            "mean_correct",
+            u_mean,
+            bart_ids,
+        )
+
+        accumulate_nll(
+            "mean_shuffled",
+            u_mean_shuffled,
+            bart_ids,
+        )
+
+        accumulate_nll(
+            "sample_correct",
+            u_sample,
+            bart_ids,
+        )
+
+        accumulate_nll(
+            "sample_shuffled",
+            u_sample_shuffled,
+            bart_ids,
+        )
+
+        accumulate_nll(
+            "prior",
+            u_prior,
+            bart_ids,
+        )
+
+    # ============================================================
+    # Aggregate posterior statistics
+    # ============================================================
+
+    means = torch.cat(
+        posterior_means,
+        dim=0,
+    )
+
+    scales = torch.cat(
+        posterior_scales,
+        dim=0,
+    )
+
+    w_mean, z_mean = torch.split(
+        means,
+        [W, Z],
+        dim=-1,
+    )
+
+    w_scale, z_scale = torch.split(
+        scales,
+        [W, Z],
+        dim=-1,
+    )
+
+    def between_sample_std(x):
+        """
+        Std across samples for each latent dimension,
+        then average over latent dimensions.
+        """
+        return (
+            x.std(
+                dim=0,
+                unbiased=False,
+            )
+            .mean()
+            .item()
+        )
+
+    diagnostics = {
+        "w_txt_abs_mean":
+            w_mean.abs().mean().item(),
+
+        "w_txt_between_sample_std":
+            between_sample_std(w_mean),
+
+        "z_txt_abs_mean":
+            z_mean.abs().mean().item(),
+
+        "z_txt_between_sample_std":
+            between_sample_std(z_mean),
+
+        "w_txt_scale_mean":
+            w_scale.mean().item(),
+
+        "w_txt_scale_between_sample_std":
+            between_sample_std(w_scale),
+
+        "z_txt_scale_mean":
+            z_scale.mean().item(),
+
+        "z_txt_scale_between_sample_std":
+            between_sample_std(z_scale),
+    }
+
+    for key in nll_totals:
+
+        diagnostics[
+            f"nll_{key}"
+        ] = (
+            nll_totals[key]
+            / max(
+                token_totals[key],
+                1,
+            )
+        )
+
+    diagnostics["mean_shuffle_delta"] = (
+        diagnostics["nll_mean_shuffled"]
+        - diagnostics["nll_mean_correct"]
+    )
+
+    diagnostics["sample_shuffle_delta"] = (
+        diagnostics["nll_sample_shuffled"]
+        - diagnostics["nll_sample_correct"]
+    )
+
+    print(
+        "\n=== TEXT POSTERIOR VARIABILITY ==="
+    )
+
+    print(
+        "w_txt |mean|:",
+        diagnostics["w_txt_abs_mean"],
+    )
+
+    print(
+        "w_txt between-sample std:",
+        diagnostics[
+            "w_txt_between_sample_std"
+        ],
+    )
+
+    print(
+        "z_txt |mean|:",
+        diagnostics["z_txt_abs_mean"],
+    )
+
+    print(
+        "z_txt between-sample std:",
+        diagnostics[
+            "z_txt_between_sample_std"
+        ],
+    )
+
+    print(
+        "w_txt scale mean:",
+        diagnostics["w_txt_scale_mean"],
+    )
+
+    print(
+        "w_txt scale between-sample std:",
+        diagnostics[
+            "w_txt_scale_between_sample_std"
+        ],
+    )
+
+    print(
+        "z_txt scale mean:",
+        diagnostics["z_txt_scale_mean"],
+    )
+
+    print(
+        "z_txt scale between-sample std:",
+        diagnostics[
+            "z_txt_scale_between_sample_std"
+        ],
+    )
+
+    print(
+        "=== END POSTERIOR VARIABILITY ===\n"
+    )
+
+    print(
+        "=== BART LATENT-USE NLL ==="
+    )
+
+    print(
+        "NLL/token - correct posterior MEAN:",
+        diagnostics["nll_mean_correct"],
+    )
+
+    print(
+        "NLL/token - shuffled posterior MEAN:",
+        diagnostics["nll_mean_shuffled"],
+    )
+
+    print(
+        "MEAN shuffle increase:",
+        diagnostics["mean_shuffle_delta"],
+    )
+
+    print(
+        "NLL/token - correct posterior SAMPLE:",
+        diagnostics["nll_sample_correct"],
+    )
+
+    print(
+        "NLL/token - shuffled posterior SAMPLE:",
+        diagnostics["nll_sample_shuffled"],
+    )
+
+    print(
+        "SAMPLE shuffle increase:",
+        diagnostics["sample_shuffle_delta"],
+    )
+
+    print(
+        "NLL/token - PRIOR sample:",
+        diagnostics["nll_prior"],
+    )
+
+    print(
+        "=== END BART LATENT-USE NLL ===\n"
+    )
+
+    # ============================================================
+    # PART 2
+    # Free-running A/B/C/D generation
+    # ============================================================
+
+    generations = {
+        "A_zimg_wprior": [],
+        "B_ztxt_wprior": [],
+        "C_zimg_wtxt": [],
+        "D_ztxt_wtxt": [],
+    }
+
+    references = []
+
+    generated_count = 0
+
+    p_w_text = model.get_simple_prior_w(
+        view=1,
+        aux=False,
+    )
+
+    for dataT in loader:
+
+        if (
+            generation_max_samples is not None
+            and generated_count
+            >= generation_max_samples
+        ):
+            break
+
+        data, _ = unpack_data_CUBcluster8(
+            dataT,
+            device=device,
+        )
+
+        images = data[0]
+        captions = data[1]
+        bart_ids = data[2]
+
+        # --------------------------------------------------------
+        # Posterior MEANS
+        # --------------------------------------------------------
+
+        mu_img, _ = img_vae.enc(
+            images
+        )
+
+        mu_txt, _ = text_vae.enc(
+            captions
+        )
+
+        _, z_img = torch.split(
+            mu_img,
+            [W, Z],
+            dim=-1,
+        )
+
+        w_txt, z_txt = torch.split(
+            mu_txt,
+            [W, Z],
+            dim=-1,
+        )
+
+        B = images.size(0)
+
+        # Respect generation_max_samples in final batch.
+        if generation_max_samples is not None:
+
+            remaining = (
+                generation_max_samples
+                - generated_count
+            )
+
+            B_use = min(
+                B,
+                remaining,
+            )
+
+        else:
+
+            B_use = B
+
+        z_img = (
+            z_img[:B_use]
+            .unsqueeze(0)
+        )
+
+        z_txt = (
+            z_txt[:B_use]
+            .unsqueeze(0)
+        )
+
+        w_txt = (
+            w_txt[:B_use]
+            .unsqueeze(0)
+        )
+
+        # --------------------------------------------------------
+        # ONE prior w draw shared by A and B.
+        # This is important for a fair comparison.
+        # --------------------------------------------------------
+
+        w_prior = p_w_text.rsample(
+            torch.Size([
+                1,
+                B_use,
+            ])
+        ).squeeze(2)
+
+        # --------------------------------------------------------
+        # A/B/C/D
+        # --------------------------------------------------------
+
+        latent_A = torch.cat(
+            (
+                w_prior,
+                z_img,
+            ),
+            dim=-1,
+        )
+
+        latent_B = torch.cat(
+            (
+                w_prior,
+                z_txt,
+            ),
+            dim=-1,
+        )
+
+        latent_C = torch.cat(
+            (
+                w_txt,
+                z_img,
+            ),
+            dim=-1,
+        )
+
+        latent_D = torch.cat(
+            (
+                w_txt,
+                z_txt,
+            ),
+            dim=-1,
+        )
+
+        latent_conditions = {
+            "A_zimg_wprior": latent_A,
+            "B_ztxt_wprior": latent_B,
+            "C_zimg_wtxt": latent_C,
+            "D_ztxt_wtxt": latent_D,
+        }
+
+        # --------------------------------------------------------
+        # GT is NOT passed to generate().
+        # --------------------------------------------------------
+
+        for name, latent in (
+            latent_conditions.items()
+        ):
+
+            generated_ids = (
+                text_vae.dec.generate(
+                    latent,
+                    max_new_tokens=max_new_tokens,
+                )
+            )
+
+            # [1,B,L] -> [B,L]
+            generated_ids = (
+                generated_ids
+                .squeeze(0)
+                .detach()
+                .cpu()
+            )
+
+            decoded = tokenizer.batch_decode(
+                generated_ids,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )
+
+            generations[name].extend(
+                [
+                    text.strip()
+                    for text in decoded
+                ]
+            )
+
+        # GT is used only AFTER generation,
+        # solely as reference text.
+        reference_batch = (
+            bart_ids[:B_use]
+            .detach()
+            .cpu()
+        )
+
+        decoded_refs = tokenizer.batch_decode(
+            reference_batch,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )
+
+        references.extend(
+            [
+                text.strip()
+                for text in decoded_refs
+            ]
+        )
+
+        generated_count += B_use
+
+    # ============================================================
+    # Generation-collapse statistics
+    # ============================================================
+
+    generation_summary = {}
+
+    print(
+        "\n=== FREE-RUNNING GENERATION DIAGNOSTIC ==="
+    )
+
+    print(
+        "Samples evaluated:",
+        generated_count,
+    )
+
+    for name, outputs in generations.items():
+
+        counts = Counter(outputs)
+
+        unique_count = len(counts)
+
+        unique_percent = (
+            100.0
+            * unique_count
+            / max(len(outputs), 1)
+        )
+
+        generation_summary[name] = {
+            "samples": len(outputs),
+            "unique_captions": unique_count,
+            "unique_percent": unique_percent,
+            "top_5_most_common":
+                counts.most_common(5),
+        }
+
+        print(
+            f"\n{name}"
+        )
+
+        print(
+            "  unique captions:",
+            unique_count,
+        )
+
+        print(
+            "  unique %:",
+            unique_percent,
+        )
+
+        print(
+            "  top 5 most common:"
+        )
+
+        for caption, count in (
+            counts.most_common(5)
+        ):
+            print(
+                f"    {count:5d}x | {caption}"
+            )
+
+    print(
+        "\n=== SAMPLE GENERATIONS ==="
+    )
+
+    num_examples = min(
+        5,
+        len(references),
+    )
+
+    for i in range(num_examples):
+
+        print(
+            f"\nSAMPLE {i}"
+        )
+
+        print(
+            "GT:",
+            references[i],
+        )
+
+        for name in generations:
+
+            print(
+                f"{name}:",
+                generations[name][i],
+            )
+
+    print(
+        "\n=== END FREE-RUNNING GENERATION DIAGNOSTIC ==="
+    )
+
+    # ============================================================
+    # Save diagnostic summary
+    # ============================================================
+
+    diagnostics["generation"] = (
+        generation_summary
+    )
+
+    diagnostics["epoch"] = epoch
+    diagnostics["split"] = (
+        args.test_time_dataset_state
+    )
+
+    output_dir = os.path.join(
+        runPath,
+        "bart_latent_diagnostics",
+    )
+
+    os.makedirs(
+        output_dir,
+        exist_ok=True,
+    )
+
+    summary_path = os.path.join(
+        output_dir,
+        (
+            f"diagnostics_"
+            f"{args.test_time_dataset_state}_"
+            f"epoch{epoch}.json"
+        ),
+    )
+
+    with open(
+        summary_path,
+        "w",
+        encoding="utf-8",
+    ) as f:
+
+        json.dump(
+            diagnostics,
+            f,
+            indent=4,
+            ensure_ascii=False,
+        )
+
+    print(
+        "\nDiagnostic summary saved to:",
+        summary_path,
+    )
+
+    return diagnostics
 
 def run_evaluation(epoch):
     """
     Runs the full evaluation suite for CUB.
     """
+
+    if args.enable_bart_latent_diagnostics:
+        evaluate_bart_latent_diagnostics(
+            epoch=epoch,
+            nll_max_batches=5,
+            generation_max_samples=1024,
+            max_new_tokens=64,
+        )
+
+        return
 
     # NEW
     if args.enable_text2text_mean:
@@ -2601,22 +3980,25 @@ def evaluate_wz_ablation(
 ):
     model.eval()
 
-    loader=test_cluster_loader
-    dataset=test_cluster_dataset
+    loader=test_time_loader
+    dataset=test_time_dataset
+
+    # loader = test_cluster_loader
+    # dataset = test_cluster_dataset
+
 
     output_dir = os.path.join(
         runPath,
         "wz_ablation"
     )
 
-
-
     W = model.params.latent_dim_w
     Z = model.params.latent_dim_z
 
+    img_vae = model.vaes[0]
     text_vae = model.vaes[1]
 
-    # Standard Gaussian text-private prior.
+    # Simple text-private prior p(w_text).
     p_w_text = model.get_simple_prior_w(
         view=1,
         aux=False
@@ -2634,22 +4016,59 @@ def evaluate_wz_ablation(
         dataset.eos_token,
     }
 
-    def caption_tensor_to_string(cap_tensor):
+    # ======================================================
+    # Decode generated text tensor -> string
+    # ======================================================
+    def generated_text_to_string(
+        generated_text,
+    ):
         """
-        cap_tensor: [L, vocab_size]
-        Uses the same argmax decoding as your current evaluation.
+        CNN:
+            generated_text: [L, custom_vocab_size]
+
+        BART:
+            generated_text: [L] token IDs
         """
-        indices = torch.argmax(
-            cap_tensor,
-            dim=-1
-        ).cpu()
+
+        if args.text_decoder_arch == "bart":
+
+            token_ids = (
+                generated_text
+                .detach()
+                .cpu()
+                .long()
+            )
+
+            return (
+                text_vae
+                .dec
+                .tokenizer
+                .decode(
+                    token_ids,
+                    skip_special_tokens=True,
+                    clean_up_tokenization_spaces=False,
+                )
+                .strip()
+            )
+
+        # --------------------------------------------------
+        # Legacy CNN text decoder
+        # --------------------------------------------------
+        indices = (
+            torch.argmax(
+                generated_text,
+                dim=-1
+            )
+            .cpu()
+        )
 
         words = []
 
         for idx in indices:
+
             idx = int(idx)
 
-            # cub.vocab loaded from JSON may have string keys
+            # vocab loaded from JSON may have string keys
             if str(idx) in dataset.i2w:
                 token = dataset.i2w[str(idx)]
             else:
@@ -2660,17 +4079,49 @@ def evaluate_wz_ablation(
 
         return " ".join(words)
 
-    def decode_text(w, z):
+    # ======================================================
+    # Decode latent (w,z) -> generated text
+    # ======================================================
+    def decode_text(
+        w,
+        z,
+    ):
         """
-        w: [1, B, W]
-        z: [1, B, Z]
-        returns: [B, L, vocab_size]
+        w: [1,B,W]
+        z: [1,B,Z]
+
+        CNN returns:
+            [B,L,vocab_size]
+
+        BART returns:
+            [B,L] token IDs
         """
+
         u = torch.cat(
             (w, z),
             dim=-1
         )
 
+        # --------------------------------------------------
+        # BART: autoregressive generation, NO teacher forcing
+        # --------------------------------------------------
+        if args.text_decoder_arch == "bart":
+
+            generated_ids = text_vae.dec.generate(
+                u,
+                max_new_tokens=args.bart_max_length,
+            )
+
+            # [1,B,L] -> [B,L]
+            return (
+                generated_ids
+                .squeeze(0)
+                .cpu()
+            )
+
+        # --------------------------------------------------
+        # Legacy CNN decoder
+        # --------------------------------------------------
         px_txt = text_vae.px_u(
             *text_vae.dec(u)
         )
@@ -2685,13 +4136,19 @@ def evaluate_wz_ablation(
 
     for batch in loader:
 
-        # UCFDataset returns:
-        # ((image, caption), labels)
+        # --------------------------------------------------
+        # BART dataset may return:
+        #
+        # data[0] = image
+        # data[1] = custom one-hot caption
+        # data[2] = BART token IDs
+        #
+        # data[2] is NOT needed in this evaluation.
+        # --------------------------------------------------
         data, _ = batch
-        img, caption = data
 
-        img = img.to(device)
-        caption = caption.to(device)
+        img = data[0].to(device)
+        caption = data[1].to(device)
 
         B = img.size(0)
 
@@ -2699,10 +4156,15 @@ def evaluate_wz_ablation(
         # 1. Get deterministic posterior MEANS
         # --------------------------------------------------
 
-        mu_img, _ = model.encoders[0](img)
-        mu_txt, _ = model.encoders[1](caption)
+        mu_img, _ = img_vae.enc(
+            img
+        )
 
-        # [B, W+Z] -> [B,W], [B,Z]
+        mu_txt, _ = text_vae.enc(
+            caption
+        )
+
+        # [B,W+Z] -> [B,W], [B,Z]
         w_img, z_img = torch.split(
             mu_img,
             [W, Z],
@@ -2715,8 +4177,9 @@ def evaluate_wz_ablation(
             dim=-1,
         )
 
-        # Decoder expects the K dimension:
-        # [1, B, latent_dim]
+        # Decoder expects K dimension:
+        #
+        # [B,D] -> [1,B,D]
         z_img = z_img.unsqueeze(0)
         z_txt = z_txt.unsqueeze(0)
         w_txt = w_txt.unsqueeze(0)
@@ -2729,28 +4192,31 @@ def evaluate_wz_ablation(
             torch.Size([1, B])
         ).squeeze(2)
 
-        # Expected:
-        # w_prior -> [1,B,W]
+        # [1,B,W]
 
         # --------------------------------------------------
         # 3. Four controlled combinations
         # --------------------------------------------------
 
+        # Image shared information + sampled text-private
         recon_A = decode_text(
             w_prior,
             z_img,
         )
 
+        # Text shared information + same sampled text-private
         recon_B = decode_text(
             w_prior,
             z_txt,
         )
 
+        # Image shared information + posterior text-private
         recon_C = decode_text(
             w_txt,
             z_img,
         )
 
+        # Full text posterior mean
         recon_D = decode_text(
             w_txt,
             z_txt,
@@ -2764,15 +4230,22 @@ def evaluate_wz_ablation(
         }
 
         # --------------------------------------------------
-        # 4. Convert tensors to text
+        # 4. Convert generated tensors to text
         # --------------------------------------------------
 
         for b in range(B):
+
             key = f"image_{counter + b}"
 
-            for experiment_name, output in batch_outputs.items():
-                generations[experiment_name][key] = (
-                    caption_tensor_to_string(output[b])
+            for (
+                experiment_name,
+                output,
+            ) in batch_outputs.items():
+
+                generations[
+                    experiment_name
+                ][key] = generated_text_to_string(
+                    output[b]
                 )
 
         counter += B
@@ -2781,7 +4254,10 @@ def evaluate_wz_ablation(
     # 5. Save four JSON files
     # --------------------------------------------------
 
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(
+        output_dir,
+        exist_ok=True
+    )
 
     for experiment_name, result in generations.items():
 
@@ -2790,11 +4266,40 @@ def evaluate_wz_ablation(
             f"{experiment_name}_epoch{epoch}.json"
         )
 
-        with open(path, "w") as f:
+        captions = list(result.values())
+
+        counts = Counter(captions)
+        unique_count = len(counts)
+        total_count = len(captions)
+
+        unique_percent = (
+                100.0 * unique_count / max(total_count, 1)
+        )
+
+        print(
+            f"\n{experiment_name}: "
+            f"{unique_count}/{total_count} unique "
+            f"({unique_percent:.4f}%)"
+        )
+
+        print("Top 5 most common captions:")
+
+        for caption, count in counts.most_common(5):
+            print(
+                f"  {count}x | {caption}"
+            )
+
+        with open(
+            path,
+            "w",
+            encoding="utf-8",
+        ) as f:
+
             json.dump(
                 result,
                 f,
                 indent=4,
+                ensure_ascii=False,
             )
 
         print(
@@ -2822,8 +4327,11 @@ if __name__ == '__main__':
         model.load_state_dict(torch.load(checkpoint_to_load, map_location=device), strict=False)
         _log_param_counts(f"test_only_epoch_{epoch_to_test}")
 
+        # NEW
+        diagnose_bart_latent_usage(max_batches=5)
+
         evaluate_wz_ablation(
-             epoch=50,
+             epoch=epoch_to_test,
          )
         print(ent)
 

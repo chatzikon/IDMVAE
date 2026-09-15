@@ -37,9 +37,9 @@ if [ "$MODE" = "test" ]; then
 fi
 
 # Model hyperparameters (Appendix C.2: 50 epochs; λ1=40, λ2=10, diffusion 0.1)
-BATCH=256
+BATCH=16
 K=1
-EPOCHS=50
+EPOCHS=5
 SEED=2
 NUM_WORKERS=4
 
@@ -53,7 +53,7 @@ diff_sg="OFF"
 
 CROSS_L_SC=40.0
 GEN_AUG_L_SC=10.0
-Z_L_SC=2000.0
+Z_L_SC=0
 gen_aug_scheme="posterior"
 GEN_AUG_TYPE="CL"
 
@@ -62,11 +62,12 @@ LV_MIN_DIST=0.05
 thres_deg=0.0
 
 ENABLE_TEST_EPOCH=true
-ENABLE_UNCONDITIONAL_GENERATION=true
-ENABLE_LATENT_CLASSIFICATION=true
+ENABLE_QUALITATIVE_VISUALS=false
+ENABLE_UNCONDITIONAL_GENERATION=false
+ENABLE_LATENT_CLASSIFICATION=false
 USE_MEAN_FOR_LATENT_CLF=true
 ENABLE_FID=false
-ENABLE_TSNE_UMAP=true
+ENABLE_TSNE_UMAP=false
 USE_MEAN_IN_LATENT_VISUALIZATION=true
 
 DENOISER=""  # Example: "IDMVAE_Cross40_11_15_55_ep50_003-DiT-XL-2/checkpoints/0050000.pt"
@@ -141,7 +142,8 @@ RUN_NOTE="${RUN_NOTE_PREFIX}${date}_${number}_gpu${gpuid}${note}"
 tSNE_save_dir="${CUB_TSNE_ROOT}/${EXPERIMENT}/${date}_${number}_${note}"
 
 
-test_time_dataset_state="test"  # eval, tes
+test_time_dataset_state="test"  # eval, test
+
 
 
 CMD_ARGS_BASE=(
@@ -166,21 +168,25 @@ CMD_ARGS_BASE=(
   "--gen_aug_sampling_scheme" "${gen_aug_scheme}"
   "--gen_aug_loss_type" "${GEN_AUG_TYPE}"
   "--note" "${RUN_NOTE}"
-  "--enable_tSNE_UMAP"
   "--tSNE_save_dir" "${tSNE_save_dir}"
   "--lv_umap_n_neighbors" "${LV_N_NEIGHBORS}"
   "--lv_umap_min_dist" "${LV_MIN_DIST}"
   "--test_time_dataset_state" "${test_time_dataset_state}"
   "--num_workers" "${NUM_WORKERS}"
-  "--use_pretrain_feats"
+  #"--use_pretrain_feats"
+  "--image_encoder_arch" "siglip"
+  "--image_decoder_arch" "vitmae"
+  "--text_decoder_arch" "bart"
+  "--amp"
+  "--bart_token_dropout" "0.5"
   #"--resume"
   #"--resume_from_CPt_runId"
   #"--CPt_runId" "UCF_release_11_20_19/checkpoints/09-02_0_gpu0_ltCL_TD_lw0.1_K1_B256_Normal_Laplace_b1.0_10.0_40.0_256_256_s2"
-  #"--test-only"
+  "--test-only"
   #"--enable_img2text"
   #"--img2text_use_diffusion_prior"
   #"--enable_text2text_mean"
-  #"--checkpoint-path" "/home/chatziko/PycharmProjects/PythonProject/IDMVAE/outputs/UCA_new_baseline/checkpoints/09-02_0_gpu0_ltCL_TD_lw0.1_K1_B256_Normal_Laplace_b1.0_10.0_40.0_256_256_s2/model_50.rar"
+  "--checkpoint-path" "/home/chatziko/PycharmProjects/PythonProject/IDMVAE/outputs/UCF_release_14_47_51/checkpoints/09-15_0_gpu0_ltCL_TD_lw0.1_IEsiglip_IDvitmae_TDbart_K1_B16_Normal_Laplace_b1.0_10.0_40.0_0.0_256_256_s2/model_5.rar"
 )
 
 if [ -n "${diff_stop_grad}" ]; then
@@ -193,9 +199,11 @@ if [ -n "${denoiser_ckpt_path}" ]; then
     "--save_eval_images_root" "${save_eval_images_root}"
   )
 fi
-
 if [ "${ENABLE_TEST_EPOCH}" = true ]; then
   CMD_ARGS_BASE+=("--enable_test_epoch")
+fi
+if [ "${ENABLE_QUALITATIVE_VISUALS}" = true ]; then
+  CMD_ARGS_BASE+=("--enable_qualitative_visuals")
 fi
 if [ "${ENABLE_UNCONDITIONAL_GENERATION}" = true ]; then
   CMD_ARGS_BASE+=("--enable_unconditional_generation")

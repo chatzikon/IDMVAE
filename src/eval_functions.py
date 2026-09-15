@@ -49,23 +49,128 @@ def _decode_matrix_entries(model, matrix, entries):
         matrix[r][c] = decoded.unsqueeze(0)
 
 
-def idmvae_generate_unconditional(model, N):
+def _decode_eval_latents(
+    model,
+    vae,
+    modality_idx,
+    latents,
+):
+    """
+    Decode latent variables during evaluation.
+
+    CNN/image decoders:
+        return a likelihood distribution.
+
+    BART text decoder:
+        return autoregressively generated token IDs.
+        No ground-truth text is supplied.
+    """
+
+    text_decoder_arch = getattr(
+        model.params,
+        "text_decoder_arch",
+        "cnn",
+    )
+
+    if (
+        modality_idx == 1
+        and text_decoder_arch == "bart"
+    ):
+        return vae.dec.generate(
+            latents,
+            max_new_tokens=model.params.bart_max_length,
+        )
+
+    return vae.decode_likelihood(
+        latents
+    )
+
+
+def idmvae_generate_unconditional(
+    model,
+    N,
+):
     with torch.no_grad():
+
         data = []
+
+        # -----------------------------------------------------
+        # Shared latent z
+        # -----------------------------------------------------
+
         if model.diffusion_loss_weight > 0.0:
             pz = model.pz_diffusion
         else:
             pz = model.get_simple_prior_z()
-        latents_z = pz.rsample(torch.Size([N]))
+
+        latents_z = pz.rsample(
+            torch.Size([N])
+        )
+
+        # -----------------------------------------------------
+        # Generate each modality
+        # -----------------------------------------------------
+
         for d, vae in enumerate(model.vaes):
+
             if model.diffusion_loss_weight > 0.0:
                 pw = model.pws_diffusion[d]
             else:
-                pw = model.get_simple_prior_w(view=d, aux=False)
-            latents_w = pw.rsample([latents_z.size()[0]])
-            latents = torch.cat((latents_w, latents_z), dim=-1)
-            px_u = vae.px_u(*vae.dec(latents))
-            data.append(px_u.mean.view(-1, *px_u.mean.size()[2:]))
+                pw = model.get_simple_prior_w(
+                    view=d,
+                    aux=False,
+                )
+
+            latents_w = pw.rsample(
+                [latents_z.size(0)]
+            )
+
+            latents = torch.cat(
+                (
+                    latents_w,
+                    latents_z,
+                ),
+                dim=-1,
+            )
+
+            decoded = _decode_eval_latents(
+                model,
+                vae,
+                d,
+                latents,
+            )
+
+            # -------------------------------------------------
+            # BART:
+            #
+            # generated IDs approximately [N,1,L]
+            # -> [N,L]
+            # -------------------------------------------------
+
+            if torch.is_tensor(decoded):
+
+                generated = decoded.reshape(
+                    -1,
+                    decoded.size(-1),
+                )
+
+                data.append(generated)
+
+            # -------------------------------------------------
+            # Existing image / CNN text behaviour.
+            # -------------------------------------------------
+
+            else:
+
+                mean = get_mean(decoded)
+
+                generated = mean.view(
+                    -1,
+                    *mean.size()[2:]
+                )
+
+                data.append(generated)
+
     return data
 
 
@@ -77,121 +182,465 @@ def idmvae_self_and_cross_modal_generation_impl(
     mode=CrossModalEvalForwardMode.PRIOR,
     data_ctrl=None,
 ):
-    if mode == CrossModalEvalForwardMode.POSTERIOR_CTRL and data_ctrl is None:
-        raise ValueError("data_ctrl is required when mode is POSTERIOR_CTRL.")
+
+    if (
+        mode == CrossModalEvalForwardMode.POSTERIOR_CTRL
+        and data_ctrl is None
+    ):
+        raise ValueError(
+            "data_ctrl is required when mode is POSTERIOR_CTRL."
+        )
 
     M = len(model.vaes)
-    dw, dz = model.params.latent_dim_w, model.params.latent_dim_z
-    qu_xs, uss = [], []
-    px_us = [[None for _ in range(M)] for _ in range(M)]
+
+    dw = model.params.latent_dim_w
+    dz = model.params.latent_dim_z
+
+    qu_xs = []
+    uss = []
+
+    px_us = [
+        [None for _ in range(M)]
+        for _ in range(M)
+    ]
+
     uss_ctrl = None
 
+    # =========================================================
+    # 1. ENCODE NORMAL INPUTS
+    # =========================================================
+    #
+    # Important:
+    #
+    # Do NOT call:
+    #
+    #     vae(data[m], K=K)
+    #
+    # because that also performs decoding.
+    #
+    # During BART evaluation decoding must be autoregressive
+    # and must not receive GT target tokens.
+    # =========================================================
+
     for m, vae in enumerate(model.vaes):
-        qu_x, px_u, us = vae(data[m], K=K)
+
+        vae._qu_x_params = vae.enc(
+            data[m]
+        )
+
+        qu_x = vae.qu_x(
+            *vae._qu_x_params
+        )
+
+        us = qu_x.rsample(
+            torch.Size([K])
+        )
+
         qu_xs.append(qu_x)
         uss.append(us)
+
+        # -----------------------------------------------------
+        # POSTERIOR_NONSHUF keeps the diagonal reconstruction.
+        # -----------------------------------------------------
+
         if mode == CrossModalEvalForwardMode.POSTERIOR_NONSHUF:
-            px_us[m][m] = px_u
+
+            px_us[m][m] = _decode_eval_latents(
+                model,
+                vae,
+                m,
+                us,
+            )
+
+    # =========================================================
+    # 2. ENCODE CONTROL INPUTS
+    # =========================================================
 
     if mode == CrossModalEvalForwardMode.POSTERIOR_CTRL:
+
         uss_ctrl = []
+
         for m, vae in enumerate(model.vaes):
-            _, _, us_ctrl = vae(data_ctrl[m], K=K)
-            uss_ctrl.append(us_ctrl)
+
+            ctrl_params = vae.enc(
+                data_ctrl[m]
+            )
+
+            qu_ctrl = vae.qu_x(
+                *ctrl_params
+            )
+
+            us_ctrl = qu_ctrl.rsample(
+                torch.Size([K])
+            )
+
+            uss_ctrl.append(
+                us_ctrl
+            )
+
+    # =========================================================
+    # 3. SELF / CROSS-MODAL GENERATION
+    # =========================================================
 
     for e, us_e in enumerate(uss):
-        latents_w_e, latents_z_e = torch.split(us_e, [dw, dz], dim=-1)
+
+        latents_w_e, latents_z_e = torch.split(
+            us_e,
+            [dw, dz],
+            dim=-1,
+        )
 
         for d, vae_d in enumerate(model.vaes):
-            if mode == CrossModalEvalForwardMode.POSTERIOR_NONSHUF and e == d:
+
+            if (
+                mode == CrossModalEvalForwardMode.POSTERIOR_NONSHUF
+                and e == d
+            ):
                 continue
+
+            # =================================================
+            # PRIOR / PRIOR_CTRL
+            # =================================================
 
             if mode in (
                 CrossModalEvalForwardMode.PRIOR,
                 CrossModalEvalForwardMode.PRIOR_CTRL,
             ):
+
                 if model.diffusion_loss_weight > 0.0:
+
                     pz = model.pz_diffusion
                     pw = model.pws_diffusion[d]
+
                 else:
+
                     pz = model.get_simple_prior_z()
-                    pw = model.get_simple_prior_w(view=d, aux=False)
+
+                    pw = model.get_simple_prior_w(
+                        view=d,
+                        aux=False,
+                    )
 
                 if mode == CrossModalEvalForwardMode.PRIOR:
+
                     latents_w_new = pw.rsample(
-                        torch.Size([us_e.size(0), us_e.size(1)])
+                        torch.Size([
+                            us_e.size(0),
+                            us_e.size(1),
+                        ])
                     ).squeeze(2)
+
                     latents_z_new = pz.rsample(
-                        torch.Size([us_e.size(0), us_e.size(1)])
+                        torch.Size([
+                            us_e.size(0),
+                            us_e.size(1),
+                        ])
                     ).squeeze(2)
-                else:  # PRIOR_CTRL
-                    latent_w_new = pw.rsample(torch.Size([us_e.size(0), 1])).squeeze(2)
-                    latent_z_new = pz.rsample(torch.Size([us_e.size(0), 1])).squeeze(2)
-                    latents_w_new = latent_w_new.repeat(1, us_e.size(1), 1)
-                    latents_z_new = latent_z_new.repeat(1, us_e.size(1), 1)
 
-                if condition_type is None or condition_type == "shared":
-                    us_new = torch.cat((latents_w_new, latents_z_e), dim=-1)
-                    px_us[e][d] = vae_d.px_u(*vae_d.dec(us_new))
-                elif condition_type == "private":
-                    us_new = torch.cat((latents_w_e, latents_z_new), dim=-1)
-                    src_vae = model.vaes[e]
-                    px_us[e][d] = src_vae.px_u(*src_vae.dec(us_new))
+                else:
+                    # PRIOR_CTRL
 
-            elif mode == CrossModalEvalForwardMode.POSTERIOR:
-                us_rs = qu_xs[d].rsample(torch.Size([K]))
-                latents_w_d, latents_z_d = torch.split(us_rs, [dw, dz], dim=-1)
-                shift_w = random.randint(1, 10)
-                shift_z = random.randint(1, 10)
-                if condition_type is None or condition_type == "shared":
+                    latent_w_new = pw.rsample(
+                        torch.Size([
+                            us_e.size(0),
+                            1,
+                        ])
+                    ).squeeze(2)
+
+                    latent_z_new = pz.rsample(
+                        torch.Size([
+                            us_e.size(0),
+                            1,
+                        ])
+                    ).squeeze(2)
+
+                    latents_w_new = latent_w_new.repeat(
+                        1,
+                        us_e.size(1),
+                        1,
+                    )
+
+                    latents_z_new = latent_z_new.repeat(
+                        1,
+                        us_e.size(1),
+                        1,
+                    )
+
+                # ---------------------------------------------
+                # Preserve shared z from source e.
+                # Decode using TARGET modality d.
+                # ---------------------------------------------
+
+                if (
+                    condition_type is None
+                    or condition_type == "shared"
+                ):
+
                     us_new = torch.cat(
                         (
-                            torch.roll(latents_w_d, shifts=shift_w, dims=1),
+                            latents_w_new,
                             latents_z_e,
                         ),
                         dim=-1,
                     )
-                    px_us[e][d] = vae_d.px_u(*vae_d.dec(us_new))
+
+                    px_us[e][d] = _decode_eval_latents(
+                        model,
+                        vae_d,
+                        d,
+                        us_new,
+                    )
+
+                # ---------------------------------------------
+                # Preserve private w from source e.
+                #
+                # Existing IDMVAE behaviour decodes with the
+                # SOURCE modality e.
+                # ---------------------------------------------
+
                 elif condition_type == "private":
+
                     us_new = torch.cat(
                         (
                             latents_w_e,
-                            torch.roll(latents_z_d, shifts=shift_z, dims=1),
+                            latents_z_new,
                         ),
                         dim=-1,
                     )
+
                     src_vae = model.vaes[e]
-                    px_us[e][d] = src_vae.px_u(*src_vae.dec(us_new))
+
+                    px_us[e][d] = _decode_eval_latents(
+                        model,
+                        src_vae,
+                        e,
+                        us_new,
+                    )
+
+            # =================================================
+            # POSTERIOR
+            # =================================================
+
+            elif mode == CrossModalEvalForwardMode.POSTERIOR:
+
+                us_rs = qu_xs[d].rsample(
+                    torch.Size([K])
+                )
+
+                latents_w_d, latents_z_d = torch.split(
+                    us_rs,
+                    [dw, dz],
+                    dim=-1,
+                )
+
+                shift_w = random.randint(
+                    1,
+                    10,
+                )
+
+                shift_z = random.randint(
+                    1,
+                    10,
+                )
+
+                if (
+                    condition_type is None
+                    or condition_type == "shared"
+                ):
+
+                    us_new = torch.cat(
+                        (
+                            torch.roll(
+                                latents_w_d,
+                                shifts=shift_w,
+                                dims=1,
+                            ),
+                            latents_z_e,
+                        ),
+                        dim=-1,
+                    )
+
+                    px_us[e][d] = _decode_eval_latents(
+                        model,
+                        vae_d,
+                        d,
+                        us_new,
+                    )
+
+                elif condition_type == "private":
+
+                    us_new = torch.cat(
+                        (
+                            latents_w_e,
+                            torch.roll(
+                                latents_z_d,
+                                shifts=shift_z,
+                                dims=1,
+                            ),
+                        ),
+                        dim=-1,
+                    )
+
+                    src_vae = model.vaes[e]
+
+                    px_us[e][d] = _decode_eval_latents(
+                        model,
+                        src_vae,
+                        e,
+                        us_new,
+                    )
+
+            # =================================================
+            # POSTERIOR_CTRL
+            # =================================================
 
             elif mode == CrossModalEvalForwardMode.POSTERIOR_CTRL:
+
                 us_d_ctrl = uss_ctrl[d]
-                latents_w_d_ctrl, latents_z_d_ctrl = torch.split(
-                    us_d_ctrl, [dw, dz], dim=-1
+
+                (
+                    latents_w_d_ctrl,
+                    latents_z_d_ctrl,
+                ) = torch.split(
+                    us_d_ctrl,
+                    [dw, dz],
+                    dim=-1,
                 )
-                if condition_type is None or condition_type == "shared":
-                    us_new = torch.cat((latents_w_d_ctrl, latents_z_e), dim=-1)
-                    px_us[e][d] = vae_d.px_u(*vae_d.dec(us_new))
+
+                if (
+                    condition_type is None
+                    or condition_type == "shared"
+                ):
+
+                    us_new = torch.cat(
+                        (
+                            latents_w_d_ctrl,
+                            latents_z_e,
+                        ),
+                        dim=-1,
+                    )
+
+                    px_us[e][d] = _decode_eval_latents(
+                        model,
+                        vae_d,
+                        d,
+                        us_new,
+                    )
+
                 elif condition_type == "private":
-                    us_new = torch.cat((latents_w_e, latents_z_d_ctrl), dim=-1)
-                    src_vae = model.vaes[e]
-                    px_us[e][d] = src_vae.px_u(*src_vae.dec(us_new))
 
-            else:  # POSTERIOR_NONSHUF
-                us_rs = qu_xs[d].rsample(torch.Size([K]))
-                latents_w_d, latents_z_d = torch.split(us_rs, [dw, dz], dim=-1)
-                if condition_type is None or condition_type == "shared":
-                    us_new = torch.cat((latents_w_d, latents_z_e), dim=-1)
-                    px_us[e][d] = vae_d.px_u(*vae_d.dec(us_new))
+                    us_new = torch.cat(
+                        (
+                            latents_w_e,
+                            latents_z_d_ctrl,
+                        ),
+                        dim=-1,
+                    )
+
+                    src_vae = model.vaes[e]
+
+                    px_us[e][d] = _decode_eval_latents(
+                        model,
+                        src_vae,
+                        e,
+                        us_new,
+                    )
+
+            # =================================================
+            # POSTERIOR_NONSHUF
+            # =================================================
+
+            else:
+
+                us_rs = qu_xs[d].rsample(
+                    torch.Size([K])
+                )
+
+                latents_w_d, latents_z_d = torch.split(
+                    us_rs,
+                    [dw, dz],
+                    dim=-1,
+                )
+
+                if (
+                    condition_type is None
+                    or condition_type == "shared"
+                ):
+
+                    us_new = torch.cat(
+                        (
+                            latents_w_d,
+                            latents_z_e,
+                        ),
+                        dim=-1,
+                    )
+
+                    px_us[e][d] = _decode_eval_latents(
+                        model,
+                        vae_d,
+                        d,
+                        us_new,
+                    )
+
                 elif condition_type == "private":
-                    us_new = torch.cat((latents_w_e, latents_z_d), dim=-1)
+
+                    us_new = torch.cat(
+                        (
+                            latents_w_e,
+                            latents_z_d,
+                        ),
+                        dim=-1,
+                    )
+
                     src_vae = model.vaes[e]
-                    px_us[e][d] = src_vae.px_u(*src_vae.dec(us_new))
 
-    return qu_xs, px_us, uss
+                    px_us[e][d] = _decode_eval_latents(
+                        model,
+                        src_vae,
+                        e,
+                        us_new,
+                    )
 
+    return (
+        qu_xs,
+        px_us,
+        uss,
+    )
+def idmvae_recon_matrix_from_px_us(
+    px_us,
+):
+    """
+    Convert decoder outputs into reconstruction tensors.
 
-def idmvae_recon_matrix_from_px_us(px_us):
-    return [[get_mean(px_u) for px_u in row] for row in px_us]
+    Normal likelihood distributions:
+        use get_mean(...)
+
+    BART generation:
+        output is already a tensor of generated token IDs.
+    """
+
+    recons = []
+
+    for row in px_us:
+
+        recon_row = []
+
+        for px_u in row:
+
+            if torch.is_tensor(px_u):
+                recon = px_u
+            else:
+                recon = get_mean(px_u)
+
+            recon_row.append(
+                recon
+            )
+
+        recons.append(
+            recon_row
+        )
+
+    return recons
 
 
 def idmvae_finalize_cross_modal_recons(model, recons, condition_type, return_denoised):

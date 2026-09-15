@@ -36,7 +36,7 @@ class VAE(nn.Module):
         # handle merging individual datasets appropriately in sub-class
         raise NotImplementedError
 
-    def forward(self, x, K=1):
+    def forward(self, x, K=1, reconstruction_target=None):
         """
         Forward function
         Returns:
@@ -46,7 +46,7 @@ class VAE(nn.Module):
         self._qu_x_params = self.enc(x) # Get encoding distribution params from encoder
         qu_x = self.qu_x(*self._qu_x_params) # Encoding distribution
         us = qu_x.rsample(torch.Size([K])) # K-sample reparameterization trick
-        px_u = self.px_u(*self.dec(us)) # Get decoding distribution
+        px_u = self.decode_likelihood(us, reconstruction_target) # Get decoding distribution
         return qu_x, px_u, us
 
     def reconstruct(self, data):
@@ -59,3 +59,15 @@ class VAE(nn.Module):
             px_u = self.px_u(*self.dec(latents))
             recon = get_mean(px_u)
         return recon
+
+    def decode_likelihood(
+            self,
+            u,
+            reconstruction_target=None,
+    ):
+        """
+        Default behaviour for the existing VAEs.
+        """
+        return self.px_u(
+            *self.dec(u)
+        )

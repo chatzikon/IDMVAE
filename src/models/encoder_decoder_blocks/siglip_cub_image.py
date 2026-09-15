@@ -78,6 +78,8 @@ class SigLIPEncoderImg(nn.Module):
 
         x = x.float()
 
+
+
         if x.shape[-2:] != (
             self.image_size,
             self.image_size,
@@ -89,6 +91,9 @@ class SigLIPEncoderImg(nn.Module):
                 align_corners=False,
                 antialias=True,
             )
+
+
+
 
         # Input dataset: [0,1]
         # SigLIP normalization: mean=.5 std=.5

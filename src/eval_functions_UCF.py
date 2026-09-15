@@ -48,6 +48,70 @@ def _plot_sentences_as_tensor(model, batched_text_modality, i2w=None):
     )
 
 
+def _plot_generated_sentences_as_tensor(
+    model,
+    batched_text_modality,
+):
+    """
+    Plot decoder-generated text.
+
+    CNN:
+        [B,32,V] custom-vocabulary probabilities/one-hot
+
+    BART:
+        [B,L] generated BART token IDs
+    """
+
+    text_decoder_arch = getattr(
+        model.params,
+        "text_decoder_arch",
+        "cnn",
+    )
+
+    if text_decoder_arch != "bart":
+        return _plot_sentences_as_tensor(
+            model,
+            batched_text_modality,
+        )
+
+    token_ids = (
+        batched_text_modality
+        .detach()
+        .cpu()
+        .long()
+    )
+
+    if token_ids.ndim == 3 and token_ids.size(0) == 1:
+        token_ids = token_ids.squeeze(0)
+
+    if token_ids.ndim != 2:
+        raise ValueError(
+            "Expected BART generated token IDs with "
+            f"shape [B,L], got {tuple(token_ids.shape)}"
+        )
+
+    sentences = (
+        model.vaes[1]
+        .dec
+        .tokenizer
+        .batch_decode(
+            token_ids,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )
+    )
+
+    return plot_text_as_image_tensor(
+        sentences,
+        pixel_width=model.img_size_original,
+        pixel_height=(
+            model.img_size_original
+            * model.text2img_ratio
+        ),
+        fontsize=model.fontsize,
+    )
+
+
 def _sent_process(model, sentences):
     return [model.vaes[1].fn_trun(model.vaes[1].fn_2i(s)) for s in sentences]
 
@@ -355,7 +419,10 @@ def get_clf_activations(flags, data, model):
 
 
 def cub_self_and_cross_modal_generation_for_fid_calculation(model, data, savePath, i):
-    recons_mat = idmvae_self_and_cross_modal_generation_eval(model, [d for d in data])
+
+    data = list(data[:len(model.vaes)])
+
+    recons_mat = idmvae_self_and_cross_modal_generation_eval(model, data)
     for r, recons_list in enumerate(recons_mat):
         for o, recon in enumerate(recons_list):
             if o == 0:
@@ -410,7 +477,7 @@ def cub_generate_unconditional(
                 samples = samples.data.cpu()
                 samples = samples.view(samples.size()[0], *samples.size()[1:])
                 outputs.append(
-                    make_grid(_plot_sentences_as_tensor(model, samples), nrow=int(np.sqrt(N)))
+                    make_grid(_plot_generated_sentences_as_tensor(model, samples), nrow=int(np.sqrt(N)))
                 )
 
     return outputs
@@ -508,6 +575,15 @@ def cub_self_and_cross_modal_generation_eval(
     CUB-specific multi-row cross-modal grids. ``mode`` selects the base recon path
     (see ``CrossModalEvalForwardMode``); ``None`` matches val-style ``forward``.
     """
+
+    # BART adds data[2] containing target token IDs.
+    # It is NOT a third modality.
+    num_modalities = len(model.vaes)
+    data = list(data[:num_modalities])
+
+    if data_ctrl is not None:
+        data_ctrl = list(data_ctrl[:num_modalities])
+
     if mode is None:
         num_modalities = len(data)
         recon_triess = [[[] for i in range(num_modalities)] for j in range(num_modalities)]
@@ -523,7 +599,7 @@ def cub_self_and_cross_modal_generation_eval(
                         recon_triess[r][o].append(recon)
                     else:
                         if i < 3:
-                            recon_triess[r][o].append(_plot_sentences_as_tensor(model, recon))
+                            recon_triess[r][o].append(_plot_generated_sentences_as_tensor(model, recon))
         for r, recons_list in enumerate(recons_mat):
             if r == 1:
                 input_data = _plot_sentences_as_tensor(model, data[r][:num]).cpu()
@@ -581,13 +657,13 @@ def cub_self_and_cross_modal_generation_eval(
                             recon_triess[r][o].append(recon)
                         else:
                             if i < 3:
-                                recon_triess[r][o].append(_plot_sentences_as_tensor(model, recon))
+                                recon_triess[r][o].append(_plot_generated_sentences_as_tensor(model, recon))
                     elif condition_type == "private":
                         if r == 0 and o == 0:
                             recon_triess[r][o].append(recon)
                         elif r == 1 and o == 1:
                             if i < 3:
-                                recon_triess[r][o].append(_plot_sentences_as_tensor(model, recon))
+                                recon_triess[r][o].append(_plot_generated_sentences_as_tensor(model, recon))
                     if model.enable_denoiser_outputs and recons_mat_denoised is not None:
                         den_entry = recons_mat_denoised[r][o]
                         if den_entry is not None:
@@ -597,14 +673,14 @@ def cub_self_and_cross_modal_generation_eval(
                                     recon_triess_denoised[r][o].append(recon_den)
                                 elif i < 3:
                                     recon_triess_denoised[r][o].append(
-                                        _plot_sentences_as_tensor(model, recon_den)
+                                        _plot_generated_sentences_as_tensor(model, recon_den)
                                     )
                             elif condition_type == "private":
                                 if (r == 0 and o == 0) or (r == 1 and o == 1 and i < 3):
                                     target = (
                                         recon_den
                                         if o == 0
-                                        else _plot_sentences_as_tensor(model, recon_den)
+                                        else _plot_generated_sentences_as_tensor(model, recon_den)
                                     )
                                     recon_triess_denoised[r][o].append(target)
         for r, recons_list in enumerate(recons_mat):
@@ -741,7 +817,7 @@ def cub_self_and_cross_modal_generation_eval(
                         recon_triess[r][o].append(recon)
                     else:
                         if i < 3:
-                            recon_triess[r][o].append(_plot_sentences_as_tensor(model, recon))
+                            recon_triess[r][o].append(_plot_generated_sentences_as_tensor(model, recon))
                     if model.enable_denoiser_outputs and recons_mat_denoised is not None:
                         den_entry = recons_mat_denoised[r][o]
                         if den_entry is not None:
@@ -750,7 +826,7 @@ def cub_self_and_cross_modal_generation_eval(
                                 recon_triess_denoised[r][o].append(recon_den)
                             elif i < 3:
                                 recon_triess_denoised[r][o].append(
-                                    _plot_sentences_as_tensor(model, recon_den)
+                                    _plot_generated_sentences_as_tensor(model, recon_den)
                                 )
         for r in range(num_modalities):
             prepared_inputs.append(_prepare_for_display(r, data[r][:num]))
@@ -851,7 +927,7 @@ def cub_self_and_cross_modal_generation_eval(
                         recon_triess[r][o].append(recon)
                     else:
                         if i < 3:
-                            recon_triess[r][o].append(_plot_sentences_as_tensor(model, recon))
+                            recon_triess[r][o].append(_plot_generated_sentences_as_tensor(model, recon))
                     if model.enable_denoiser_outputs and recons_mat_denoised is not None:
                         den_entry = recons_mat_denoised[r][o]
                         if den_entry is not None:
@@ -860,7 +936,7 @@ def cub_self_and_cross_modal_generation_eval(
                                 recon_triess_denoised[r][o].append(recon_den)
                             elif i < 3:
                                 recon_triess_denoised[r][o].append(
-                                    _plot_sentences_as_tensor(model, recon_den)
+                                    _plot_generated_sentences_as_tensor(model, recon_den)
                                 )
         for r, recons_list in enumerate(recons_mat):
             if r == 1:

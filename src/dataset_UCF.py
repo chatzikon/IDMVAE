@@ -12,6 +12,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict, Tuple
 from diffusers.models import AutoencoderKL # pip install diffusers transformers accelerate
+from transformers import AutoTokenizer
 
 MIN_WORD_FREQ = 1
 
@@ -162,7 +163,17 @@ class UCFDataset(Dataset):
         self.args = args
         self.use_pretrain_feats = use_pretrain_feats
 
+        self.text_decoder_arch = getattr(args,"text_decoder_arch","cnn")
 
+        if self.text_decoder_arch == "bart":
+
+            self.bart_tokenizer = (AutoTokenizer.from_pretrained(getattr(args,"bart_model_name","facebook/bart-base")))
+            self.bart_max_length = getattr(args,"bart_max_length",64)
+
+        else:
+
+            self.bart_tokenizer = None
+            self.bart_max_length = None
 
 
         if shared_data is not None:
@@ -286,34 +297,39 @@ class UCFDataset(Dataset):
         idx_tensor = torch.tensor(idxs, dtype=torch.long)
         # one-hot
         cap_tensor = F.one_hot(idx_tensor, num_classes=self.vocab_size).float()
+
+
+
         # labels
-        lbl_cluster = int(
-            self.labels_cluster[img_idx]
-        )
+        lbl_cluster = int(self.labels_cluster[img_idx])
 
-        lbl_color = int(
-            self.labels_color[img_idx]
-        )
+        lbl_color = int(self.labels_color[img_idx])
 
-        lbl_category = int(
-            self.labels_category[img_idx]
-        )
+        lbl_category = int(self.labels_category[img_idx])
         img_id = self.image_ids[img_idx] if self.image_ids is not None else None
         dataset_index = img_idx  # This is the index of the image in the original dataset
         subset_index = idx  # This is the index in the subset of pairs (img_idx, cap_idx)
 
-        datas = (
-            img,
-            cap_tensor,
-        )
+        if self.text_decoder_arch == "bart":
 
-        labels = (
-            lbl_cluster,
-            lbl_color,
-            lbl_category,
-            img_id,
-            dataset_index,
-        )
+            bart_tokens = self.bart_tokenizer(
+                raw,
+                add_special_tokens=True,
+                max_length=self.bart_max_length,
+                truncation=True,
+                padding="max_length",
+                return_tensors="pt",
+            )
+
+            bart_ids = bart_tokens["input_ids"].squeeze(0).long()
+
+            datas = (img, cap_tensor, bart_ids)
+
+        else:
+
+            datas = (img, cap_tensor)
+
+        labels = (lbl_cluster,lbl_color,lbl_category,img_id,dataset_index)
 
         return datas, labels
 
@@ -335,8 +351,12 @@ class CUBImageViewDataset(Dataset):
         return len(self.original_cub_dataset)
 
     def __getitem__(self, idx):
-        (img, _), (lbl_cluster, lbl_color, lbl_category, img_id, dataset_index) = self.original_cub_dataset[idx]
-        return img, (lbl_cluster, lbl_color, lbl_category, img_id, dataset_index)
+        data, labels = self.original_cub_dataset[idx]
+
+        # data[0] = image
+        img = data[0]
+
+        return img, labels
 
 class CUBCaptionViewDataset(Dataset):
     """
@@ -350,8 +370,18 @@ class CUBCaptionViewDataset(Dataset):
         return len(self.original_cub_dataset)
 
     def __getitem__(self, idx):
-        (_, cap_tensor), (lbl_cluster, lbl_color, lbl_category, img_id, dataset_index) = self.original_cub_dataset[idx]
-        return cap_tensor, (lbl_cluster, lbl_color, lbl_category, img_id, dataset_index)
+
+        data, labels = self.original_cub_dataset[idx]
+
+        # data[1] = custom caption representation used
+        # by the existing text encoder.
+        #
+        # In BART mode:
+        # data[2] = BART token IDs, but these are decoder
+        # targets/references and are NOT needed here.
+        cap_tensor = data[1]
+
+        return cap_tensor, labels
 
 
 class CUBSentences(Dataset):

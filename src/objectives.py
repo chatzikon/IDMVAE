@@ -22,154 +22,494 @@ Abbreviations:
 """
 
 
-def compute_elbo_loss(model, x, K=1, test=False):
+def compute_elbo_loss(
+    model,
+    x,
+    K=1,
+    test=False,
+):
     """
     Core ELBO computation for a single minibatch.
 
-    Parameters:
-        - model: MMVAE+ model instance.
-        - x: Input data for the minibatch.
-        - K: Number of samples for latent space resampling (steps).
-        - test: Boolean indicating whether this is for testing.
+    Supports both:
 
-    Returns:
-        - torch.Tensor: Log weights (lws) for the minibatch.
-        - shared_latents (list): List of shared latent tensors (one per view).
-        - shared_dists (list): List of distributions for shared latents (one per view).
-        - private_latents (list): List of private latent tensors (one per view).
-        - private_dists (list): List of distributions for private latents (one per view).
+        text_decoder_arch == "cnn"
+        text_decoder_arch == "bart"
 
-    Math & Logic:
+    Reconstruction targets are separated from encoder inputs.
 
-    1. Forward Pass:
-    Calls the model to perform self- and cross-modal forward passes, generating:
-    - q(u∣x): Posterior distributions of latents.
-    - p(x∣u): Decoded data distributions.
-    - u∼q(u∣x): Sampled latent codes.
+    Examples
+    --------
+    Image:
+        SigLIP + CNN:
+            encoder input  = RGB
+            decoder target = SD-VAE latent
 
-    2. Decompose Latents:
-    Splits the latents u into:
-    - w: Modality-specific / Private latents.
-    - z: Shared latents.
+        SigLIP + ViT-MAE:
+            encoder input  = RGB
+            decoder target = RGB prepared for ViT-MAE
 
-    3. Compute Likelihoods:
-    Likelihoods of reconstructed data x under p(x∣u) for each modality.
+    Text:
+        CNN decoder:
+            encoder input  = custom one-hot caption
+            decoder target = same custom one-hot caption
 
-    4. Compute KL Divergences:
-    Between q(u∣x)and p(u), with u split into w and z :
-    KL[q(z∣x)∣∣p(z)]+KL[q(w∣x)∣∣p(w)]
-
-    5. Log-Weight Calculation:
-    Combines the likelihoods and KL terms:
-    lqz_x = log(1/M*∑p(z|x_i))
-    lw=logp(x∣u)+β[logp(z)+logp(w)−logq(z∣x)−logq(w∣x)]
-
+        BART decoder:
+            encoder input  = custom one-hot caption
+            decoder target = BART token IDs
     """
-    if test:
-        # Posterior qu_xs shape: dist_list[M] -> dist.sample() -> (B, W+Z)
-        # Likelihood px_us shape: dist_list[M][M] -> dist.sample() -> (K, B, C, H, V)
-        # uss shape: sample_list[M] -> (K, B, W+Z)
-        qu_xs, px_us, uss = model.self_and_cross_modal_generation_forward(x, K)
+
+    # =========================================================
+    # 1. PREPARE RECONSTRUCTION TARGETS
+    # =========================================================
+    #
+    # IMPORTANT:
+    #
+    # This must happen BEFORE model(...).
+    #
+    # The old CNN decoder only needs the latent u to construct
+    # p(x|u).
+    #
+    # BART additionally needs the ground-truth BART token IDs
+    # during training for teacher forcing.
+    # =========================================================
+
+    text_decoder_arch = getattr(model.params,"text_decoder_arch", "cnn")
+
+
+    if not test:
+
+        # =====================================================
+        # TRAINING
+        # =====================================================
+        #
+        # BART is allowed to use teacher forcing here.
+        #
+        # The reconstruction targets must therefore be built
+        # BEFORE model.forward().
+        # =====================================================
+
+        reconstruction_targets = (
+            get_reconstruction_targets(
+                model,
+                x,
+            )
+        )
+
+        qu_xs, px_us, uss = model(
+            x,
+            K,
+            reconstruction_targets=reconstruction_targets,
+        )
+
+
     else:
-        qu_xs, px_us, uss = model(x, K)
 
-    reconstruction_targets = (get_reconstruction_targets(model,x))
+        # =====================================================
+        # TEST LOSS
+        # =====================================================
+        #
+        # IMPORTANT:
+        #
+        # test=True means held-out ELBO / likelihood testing.
+        #
+        # This is NOT the same as autoregressive caption
+        # generation evaluation.
+        #
+        # BART:
+        #     Teacher forcing is allowed here so that we can
+        #     compute p(x_text | u) / reconstruction likelihood.
+        #
+        # CNN:
+        #     Keep the existing legacy test-time behaviour.
+        # =====================================================
 
-    # Initialize lists to store shared and private latents and latent distributions for generative augmentation.
-    shared_latents, shared_dists = [], []  # prior, posterior
-    private_latents, private_dists = [], []
+        if text_decoder_arch == "bart":
 
-    # List of latent distributions for shared and private latents
-    # r: len M, qu_x: dist -> loc, scale.shape: (B, W+Z), (B, W+Z)
-    qz_xs, qw_xs = [], []
+            # -------------------------------------------------
+            # BART TEST ELBO
+            # -------------------------------------------------
+            #
+            # Build targets BEFORE forward because the BART
+            # decoder requires target token IDs for its
+            # teacher-forced likelihood.
+            #
+            # x[1]:
+            #     custom one-hot caption used by CNN encoder
+            #
+            # x[2]:
+            #     BART-tokenized caption used as decoder target
+            # -------------------------------------------------
+
+            reconstruction_targets = (
+                get_reconstruction_targets(
+                    model,
+                    x,
+                )
+            )
+
+            qu_xs, px_us, uss = model(
+                x,
+                K,
+                reconstruction_targets=reconstruction_targets,
+            )
+
+        else:
+
+            # -------------------------------------------------
+            # CNN TEST ELBO
+            # -------------------------------------------------
+            #
+            # Preserve the existing behaviour.
+            #
+            # Generate first without reconstruction targets,
+            # then use GT only afterward when evaluating
+            # log_prob().
+            # -------------------------------------------------
+
+            qu_xs, px_us, uss = (
+                model.self_and_cross_modal_generation_forward(
+                    x,
+                    K,
+                )
+            )
+
+            reconstruction_targets = (
+                get_reconstruction_targets(
+                    model,
+                    x,
+                )
+            )
+
+
+    # =========================================================
+    # 3. SPLIT POSTERIORS INTO PRIVATE w AND SHARED z
+    # =========================================================
+
+    shared_latents = []
+    shared_dists = []
+
+    private_latents = []
+    private_dists = []
+
+    qz_xs = []
+    qw_xs = []
+
     for r, qu_x in enumerate(qu_xs):
-        # qu_x_r_mean and qx_r_lv shape: loc, scale, (B, W+Z), (B, W+Z)
-        qu_x_r_mean, qu_x_r_lv = model.vaes[
-            r
-        ].qu_x_params
-        # (B, W+Z) -> (B, W), (B, Z)
+
+        # Posterior parameters:
+        #
+        # [B,W+Z]
+        qu_x_r_mean, qu_x_r_lv = (
+            model.vaes[r].qu_x_params
+        )
+
+        # -----------------------------------------------------
+        # Split posterior parameters:
+        #
+        # private w
+        # shared  z
+        # -----------------------------------------------------
+
         qw_x_mean, qz_x_mean = torch.split(
-            qu_x_r_mean, [model.params.latent_dim_w, model.params.latent_dim_z], dim=-1
+            qu_x_r_mean,
+            [
+                model.params.latent_dim_w,
+                model.params.latent_dim_z,
+            ],
+            dim=-1,
         )
+
         qw_x_lv, qz_x_lv = torch.split(
-            qu_x_r_lv, [model.params.latent_dim_w, model.params.latent_dim_z], dim=-1
+            qu_x_r_lv,
+            [
+                model.params.latent_dim_w,
+                model.params.latent_dim_z,
+            ],
+            dim=-1,
         )
-        # qw_x shape: dist.sample()->(B, W)
+
         qw_x = model.vaes[r].qu_x(
-            qw_x_mean, qw_x_lv
+            qw_x_mean,
+            qw_x_lv,
         )
-        qz_x = model.vaes[r].qu_x(qz_x_mean, qz_x_lv)
+
+        qz_x = model.vaes[r].qu_x(
+            qz_x_mean,
+            qz_x_lv,
+        )
+
         qz_xs.append(qz_x)
         qw_xs.append(qw_x)
+
 
     shared_dists = qz_xs
     private_dists = qw_xs
 
+
+    # =========================================================
+    # 4. ELBO TERMS
+    # =========================================================
+
     lws = []
     KL_divs = []
     llik_recons = []
+
+
+
+
     for r, qu_x in enumerate(qu_xs):
-        # ws, zs shape: (K, B, W+Z) -> (K, B, W), (K, B, Z)
+
+        # -----------------------------------------------------
+        # Split sampled latent:
+        #
+        # [K,B,W+Z]
+        #       ↓
+        # w: [K,B,W]
+        # z: [K,B,Z]
+        # -----------------------------------------------------
+
         ws, zs = torch.split(
-            uss[r], [model.params.latent_dim_w, model.params.latent_dim_z], dim=-1
+            uss[r],
+            [
+                model.params.latent_dim_w,
+                model.params.latent_dim_z,
+            ],
+            dim=-1,
         )
+
         shared_latents.append(zs)
         private_latents.append(ws)
-        # lpz shape: (K, B)
-        # distribution.log_prob(zs) -> (K, B, Z) -> .sum(-1) -> (K, B)
-        lpz = model.get_simple_prior_z().log_prob(zs).sum(-1)
-        lpw = model.get_simple_prior_w(view=r, aux=False).log_prob(ws).sum(-1)
-        # shape (K, B)
-        lqz_x = log_mean_exp(
-            torch.stack([qz_x.log_prob(zs).sum(-1) for qz_x in qz_xs])
-        )  # Mean of the views
-        lqw_x = (
-            qw_xs[r].log_prob(ws).sum(-1)
-        )  # Modality-specific without mean of the views
 
-        # Each row of px_us contains K distributions, each corresponding to the reconstruction from
-        #   the z of view r, combined with the w of view d
-        #   the reconstruction used the decoder in view d, therefore the llik_scaling for view d is used.
-        # px_u: dist, [K, B, channel, height, width]
-        # Each element of lpx_u has shape [K, B]
-        lpx_u = [
-            #px_u.log_prob(x[d])
-            px_u.log_prob(reconstruction_targets[d])
-            .view(*px_u.batch_shape[:2], -1)
-            .mul(model.vaes[d].llik_scaling)
+
+        # =====================================================
+        # PRIOR LOG-PROBABILITIES
+        # =====================================================
+
+        lpz = (
+            model
+            .get_simple_prior_z()
+            .log_prob(zs)
             .sum(-1)
-            for d, px_u in enumerate(px_us[r])
-        ]
+        )
 
-        # The reconstruction log_probs for different target view d, and the same source view r, are summed.
-        lpx_u = torch.stack(lpx_u).sum(0)
+        lpw = (
+            model
+            .get_simple_prior_w(
+                view=r,
+                aux=False,
+            )
+            .log_prob(ws)
+            .sum(-1)
+        )
 
-        # shape (K, B)
-        lw = lpx_u + model.params.beta * (lpz + lpw - lqz_x - lqw_x)
+
+        # =====================================================
+        # POSTERIOR LOG-PROBABILITIES
+        # =====================================================
+
+        lqz_x = log_mean_exp(
+            torch.stack([
+                qz_x
+                .log_prob(zs)
+                .sum(-1)
+
+                for qz_x in qz_xs
+            ])
+        )
+
+        lqw_x = (
+            qw_xs[r]
+            .log_prob(ws)
+            .sum(-1)
+        )
+
+
+        # =====================================================
+        # RECONSTRUCTION LOG-LIKELIHOODS
+        # =====================================================
+        #
+        # px_us[r][d]:
+        #
+        #   r = source modality supplying shared z
+        #   d = target modality / decoder
+        #
+        # Examples:
+        #
+        #   px_us[0][0] = image -> image
+        #   px_us[0][1] = image -> text
+        #   px_us[1][0] = text  -> image
+        #   px_us[1][1] = text  -> text
+        #
+        # CNN text decoder:
+        #
+        #   log_prob:
+        #       [K,B,32]
+        #
+        # BART text decoder:
+        #
+        #   log_prob:
+        #       [K,B,L_bart]
+        #
+        # Image decoder:
+        #
+        #   log_prob:
+        #       [K,B,C,H,W]
+        #
+        # We therefore avoid relying on
+        # torch.distributions.batch_shape and simply preserve
+        # the first two dimensions [K,B], flattening everything
+        # after them.
+        # =====================================================
+
+        lpx_u = []
+
+
+
+        for d, px_u in enumerate(px_us[r]):
+
+            target = reconstruction_targets[d]
+
+            log_prob = px_u.log_prob(
+                target
+            )
+
+            # -------------------------------------------------
+            # Expected first dimensions:
+            #
+            #   [K,B,...]
+            #
+            # This works for:
+            #   image distributions
+            #   old OneHotCategorical text
+            #   new BartTextLikelihood
+            # -------------------------------------------------
+
+            if log_prob.ndim < 2:
+
+                raise RuntimeError(
+                    "Reconstruction log_prob must have "
+                    "at least [K,B] dimensions, but got "
+                    f"{log_prob.shape} for target view {d}."
+                )
+
+            log_prob = log_prob.reshape(
+                log_prob.shape[0],
+                log_prob.shape[1],
+                -1,
+            )
+
+            # Use scaling belonging to the TARGET modality d.
+            log_prob = (
+                log_prob
+                .mul(
+                    model.vaes[d].llik_scaling
+                )
+                .sum(-1)
+            )
+
+
+
+            # [K,B]
+            lpx_u.append(log_prob)
+
+
+        # Sum likelihoods over target modalities.
+        #
+        # [M,K,B] -> [K,B]
+        lpx_u = (
+            torch
+            .stack(lpx_u)
+            .sum(0)
+        )
+
+
+        # =====================================================
+        # LOG IMPORTANCE WEIGHT / ELBO
+        # =====================================================
+
+        KL_div = (
+            lpz
+            + lpw
+            - lqz_x
+            - lqw_x
+        )
+
+        lw = (
+            lpx_u
+            + model.params.beta * KL_div
+        )
+
         lws.append(lw)
-
-        # Reconstruction term
-        llik_recon = lpx_u
-        llik_recons.append(llik_recon)
-
-        # KL divergence term
-        KL_div = lpz + lpw - lqz_x - lqw_x
+        llik_recons.append(lpx_u)
         KL_divs.append(KL_div)
 
-    # shape: (M, K, B)
+
+
+    # =========================================================
+    # 5. STACK MODALITIES
+    # =========================================================
+
+    # [M,K,B]
     lws = torch.stack(lws)
-    llik_recons_stk = torch.stack(llik_recons)
-    KL_divs_stk = torch.stack(KL_divs)
 
-    # log_mean_exp removes the "K" dimension, mean(0) removes "M" by averaging over (source) views, mean() average over batch
-    elbo_loss = -log_mean_exp(lws, dim=1).mean(0).mean()
-    llik_recon_loss = -log_mean_exp(llik_recons_stk, dim=1).mean(0).mean()
-    KL_div_loss = -log_mean_exp(KL_divs_stk, dim=1).mean(0).mean()
+    llik_recons_stk = torch.stack(
+        llik_recons
+    )
 
-    recon_KL_sum_loss = llik_recon_loss + model.params.beta * KL_div_loss
+    KL_divs_stk = torch.stack(
+        KL_divs
+    )
 
-    # shared_latents and private_latents are lists of length M, where each element is of shape [K, B, Z/W]
-    # shared_dists and private_dists are lists of length M, where each element is a distribution with parameters of the shape [B, Z/W]
+
+    # =========================================================
+    # 6. FINAL LOSSES
+    # =========================================================
+
+    # log_mean_exp over K
+    # mean over source modalities M
+    # mean over minibatch B
+
+    elbo_loss = (
+        -log_mean_exp(
+            lws,
+            dim=1,
+        )
+        .mean(0)
+        .mean()
+    )
+
+    llik_recon_loss = (
+        -log_mean_exp(
+            llik_recons_stk,
+            dim=1,
+        )
+        .mean(0)
+        .mean()
+    )
+
+
+
+    KL_div_loss = (
+        -log_mean_exp(
+            KL_divs_stk,
+            dim=1,
+        )
+        .mean(0)
+        .mean()
+    )
+
+    recon_KL_sum_loss = (
+        llik_recon_loss
+        + model.params.beta
+        * KL_div_loss
+    )
+
+
+    # =========================================================
+    # 7. RETURN
+    # =========================================================
+
     return (
         elbo_loss,
         recon_KL_sum_loss,
@@ -470,27 +810,111 @@ def compute_gen_aug_loss_oneview(
         raise ValueError(
             f"Invalid role: {role}. Expected 'roll_private' or 'roll_shared'."
         )
+    # ---------------------------------------------------------
+    # Decode augmented latent and re-encode it.
+    #
+    # BART text uses a special fully differentiable continuous
+    # GenAug path. All other decoders keep the original path.
+    # ---------------------------------------------------------
 
-    aug_data_raw = decoder(aug_in)
+    is_bart_text = (
+            view_index == 1
+            and getattr(
+        model.params,
+        "text_decoder_arch",
+        "cnn",
+    ) == "bart"
+    )
 
-    # Handle different decoder outputs:
-    if isinstance(aug_data_raw, tuple):
-        aug_data_K = aug_data_raw[0]  # Extract reconstructed image mean
-    elif isinstance(aug_data_raw, list):
-        aug_data_K = aug_data_raw[
-            0
-        ]  # Extract the first tensor (for CUB text), [1, 32, 32, 1590]
+    if is_bart_text:
+
+        # -----------------------------------------------------
+        # BART text GenAug
+        # -----------------------------------------------------
+        #
+        # aug_in:
+        #     [K, B, W+Z]
+        #
+        # forward_gen_aug returns continuous text features:
+        #     [K, B, 32, 128]
+        #
+        # No target caption.
+        # No teacher forcing.
+        # No discrete tokens.
+        # No argmax.
+        # -----------------------------------------------------
+
+        aug_data_K = decoder.forward_gen_aug(
+            aug_in
+        )
+
+        # Flatten K and B:
+        #
+        # [K, B, 32, 128]
+        #       ->
+        # [K*B, 32, 128]
+        aug_data = aug_data_K.reshape(
+            -1,
+            aug_data_K.size(-2),
+            aug_data_K.size(-1),
+        )
+
+        # BART already produced 128-D continuous embeddings,
+        # so bypass the CNN text encoder's vocab -> embedding
+        # projection layer.
+        mu, sigma = encoder.forward_from_embeddings(
+            aug_data
+        )
+
     else:
-        raise ValueError("aug_data_raw is wrong!")
 
-    # Flatten `aug_data` to (K*B, C, H, V) or (K*B, vocab_size)
-    aug_data = aug_data_K.view(-1, *aug_data_K.shape[2:])
+        # -----------------------------------------------------
+        # Original GenAug path
+        # -----------------------------------------------------
 
-    # Encode augmented data to get new latents
-    # mu, sigma shape: (K*B, W+Z)
-    #mu, sigma = encoder(aug_data)  # Normal or Laplace: mu(loc) and sigma(scale)
-    aug_data_for_encoder = (prepare_augmented_data_for_encoder(model,aug_data,view_index))
-    mu, sigma = encoder(aug_data_for_encoder)
+        aug_data_raw = decoder(
+            aug_in
+        )
+
+        # Handle different decoder outputs.
+        if isinstance(aug_data_raw, tuple):
+
+            # Image decoder, e.g. reconstructed image mean.
+            aug_data_K = aug_data_raw[0]
+
+        elif isinstance(aug_data_raw, list):
+
+            # Legacy CNN text decoder.
+            aug_data_K = aug_data_raw[0]
+
+        else:
+
+            raise ValueError(
+                "aug_data_raw is wrong!"
+            )
+
+        # Flatten K and B:
+        #
+        # [K,B,...] -> [K*B,...]
+        aug_data = aug_data_K.reshape(
+            -1,
+            *aug_data_K.shape[2:],
+        )
+
+        # Architecture-specific preparation, mainly needed
+        # for the image branch.
+        aug_data_for_encoder = (
+            prepare_augmented_data_for_encoder(
+                model,
+                aug_data,
+                view_index,
+            )
+        )
+
+        # Standard encoder path.
+        mu, sigma = encoder(
+            aug_data_for_encoder
+        )
 
     # Split the mu and logvar into shared and private parts
     private_mu, shared_mu = torch.split(

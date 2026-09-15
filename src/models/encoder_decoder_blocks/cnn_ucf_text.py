@@ -70,25 +70,139 @@ class Enc(nn.Module):
         )
 
     def forward(self, x):
-        x_emb = self.embedding(x).unsqueeze(1)
+        """
+        Normal text-encoder path.
+
+        Input:
+            x: [B, maxSentLen, vocab_size]
+
+        The custom-vocabulary representation is first projected
+        into the existing 128-D embedding space.
+        """
+
+        x_emb = self.embedding(x)
+
+        return self.forward_from_embeddings(x_emb)
+
+    def forward_from_embeddings(self, x_emb):
+        """
+        Encode text that is already represented in the internal
+        continuous embedding space.
+
+        This is used by BART GenAug.
+
+        Expected input:
+            [B, maxSentLen, embeddingDim]
+
+        With the current architecture:
+            [B, 32, 128]
+        """
+
+        if x_emb.ndim != 3:
+            raise ValueError(
+                "Expected embedded text with shape "
+                f"[B,{maxSentLen},{embeddingDim}], "
+                f"got {tuple(x_emb.shape)}"
+            )
+
+        if x_emb.size(1) != maxSentLen:
+            raise ValueError(
+                f"Expected sequence length {maxSentLen}, "
+                f"got {x_emb.size(1)}"
+            )
+
+        if x_emb.size(2) != embeddingDim:
+            raise ValueError(
+                f"Expected embedding dimension {embeddingDim}, "
+                f"got {x_emb.size(2)}"
+            )
+
+        # [B,32,128] -> [B,1,32,128]
+        x_emb = x_emb.unsqueeze(1)
+
+        # -----------------------------------------------------
+        # Private latent w
+        # -----------------------------------------------------
+
         e_w = self.enc_w(x_emb)
-
-
 
         e_w = e_w.view(
             -1,
-            fBase * 4 * sentenceBottleneck * embeddingBottleneck
+            fBase * 4
+            * sentenceBottleneck
+            * embeddingBottleneck
         )
-        mu_w, lv_w = self.c1_w(e_w), self.c2_w(e_w)
+
+        mu_w = self.c1_w(e_w)
+        lv_w = self.c2_w(e_w)
+
+        # -----------------------------------------------------
+        # Shared latent z
+        # -----------------------------------------------------
+
         e_z = self.enc_z(x_emb)
-        mu_z, lv_z = self.c1_z(e_z).squeeze(), self.c2_z(e_z).squeeze()
+
+        mu_z = (
+            self.c1_z(e_z)
+            .squeeze(-1)
+            .squeeze(-1)
+        )
+
+        lv_z = (
+            self.c2_z(e_z)
+            .squeeze(-1)
+            .squeeze(-1)
+        )
+
+        # -----------------------------------------------------
+        # Distribution parameters
+        # -----------------------------------------------------
+
         if self.dist == 'Normal':
-            return torch.cat((mu_w, mu_z), dim=-1), \
-                torch.cat((F.softplus(lv_w) + Constants.eta, F.softplus(lv_z) + Constants.eta), dim=-1)
+
+            return (
+                torch.cat(
+                    (mu_w, mu_z),
+                    dim=-1,
+                ),
+                torch.cat(
+                    (
+                        F.softplus(lv_w)
+                        + Constants.eta,
+
+                        F.softplus(lv_z)
+                        + Constants.eta,
+                    ),
+                    dim=-1,
+                ),
+            )
+
         else:
-            return torch.cat((mu_w, mu_z), dim=-1), \
-                torch.cat((F.softmax(lv_w, dim=-1) * lv_w.size(-1) + Constants.eta,
-                           F.softmax(lv_z, dim=-1) * lv_z.size(-1) + Constants.eta), dim=-1)
+
+            return (
+                torch.cat(
+                    (mu_w, mu_z),
+                    dim=-1,
+                ),
+                torch.cat(
+                    (
+                        F.softmax(
+                            lv_w,
+                            dim=-1,
+                        )
+                        * lv_w.size(-1)
+                        + Constants.eta,
+
+                        F.softmax(
+                            lv_z,
+                            dim=-1,
+                        )
+                        * lv_z.size(-1)
+                        + Constants.eta,
+                    ),
+                    dim=-1,
+                ),
+            )
 
 
 class Dec(nn.Module):

@@ -4,124 +4,178 @@ import torch
 VAE_LATENT_SCALE = 0.18215
 
 
-def uses_siglip_image_encoder(model):
-
-    return (
-        getattr(
-            model.params,
-            "image_encoder_arch",
-            "cnn"
-        )
-        == "siglip"
-    )
 
 
-def uses_vitmae_image_decoder(model):
 
-    return (
-        getattr(
-            model.params,
-            "image_decoder_arch",
-            "cnn"
-        )
-        == "vitmae"
-    )
-
-
-def get_reconstruction_targets(model, x):
+def get_reconstruction_targets(model,x):
     """
-    Build reconstruction targets without changing the actual
-    modality inputs passed to the encoders.
+    Create reconstruction targets for the two actual
+    IDMVAE modalities:
 
-    Cases
-    -----
-    1. SigLIP + ViT-MAE:
-       encoder input  = RGB
-       decoder target = RGB resized to ViT-MAE resolution
+        targets[0] -> image reconstruction target
+        targets[1] -> text reconstruction target
 
-    2. SigLIP + old CNN decoder:
-       encoder input  = RGB
-       decoder target = SD-VAE latent
+    Important:
+    These targets do NOT replace the inputs seen by the
+    encoders.
 
-    3. Legacy CNN setup:
-       reconstruction target = original modality input
+    For example, with SigLIP + ViT-MAE:
+
+        encoder input:
+            RGB image
+
+        decoder target:
+            RGB image resized for ViT-MAE
     """
 
-    # =========================================================
-    # NEW RGB ViT-MAE branch
-    # =========================================================
-    if uses_vitmae_image_decoder(model):
+    image_encoder_arch = getattr(
+        model.params,
+        "image_encoder_arch",
+        "cnn",
+    )
 
-        # x[0] is RGB.
-        #
-        # ViT-MAE decoder reconstructs RGB directly.
-        # prepare_target() handles the required resolution,
-        # e.g. 256x256 -> 224x224 for facebook/vit-mae-base.
-        image_target = (
-            model.vaes[0]
-            .dec
-            .prepare_target(x[0])
-        )
+    image_decoder_arch = getattr(
+        model.params,
+        "image_decoder_arch",
+        "cnn",
+    )
 
-        targets = list(x)
+    text_decoder_arch = getattr(
+        model.params,
+        "text_decoder_arch",
+        "cnn",
+    )
 
-        # Replace ONLY the image reconstruction target.
+    # There are two actual modalities:
+    #
+    #   0 -> image
+    #   1 -> text
+    #
+    # x may later contain x[2] as an auxiliary BART target,
+    # but that is NOT a third modality.
+    targets = [x[0], x[1]]
+
+
+    # =====================================================
+    # IMAGE RECONSTRUCTION TARGET
+    # =====================================================
+
+    # -----------------------------------------------------
+    # Case 1:
+    # SigLIP encoder + ViT-MAE decoder
+    #
+    # RGB -> SigLIP -> latent -> ViT-MAE -> RGB
+    #
+    # Therefore reconstruction target is RGB.
+    # -----------------------------------------------------
+    if image_encoder_arch == "siglip" and image_decoder_arch == "vitmae":
+
+        targets[0] = (model.vaes[0].dec.prepare_target(x[0]))
+
+
+    # -----------------------------------------------------
+    # Case 2:
+    # SigLIP encoder + old CNN decoder
+    #
+    # RGB -> SigLIP -> latent -> CNN -> SD-VAE latent
+    #
+    # Therefore the reconstruction target must also be
+    # an SD-VAE latent.
+    # -----------------------------------------------------
+    elif (
+        image_encoder_arch == "siglip"
+        and image_decoder_arch == "cnn"
+    ):
+
+        vae = model.pretrained_vae
+
+        if vae is None:
+            raise RuntimeError(
+                "SigLIP + CNN image decoder requires "
+                "model.pretrained_vae, but it is None."
+            )
+
+        vae_device = next(vae.parameters()).device
+
+        rgb = x[0].to(vae_device).float().mul(2).sub(1)
+
+        # Reconstruction target only:
+        # gradients are unnecessary.
+        with torch.no_grad():
+
+            image_target = (vae.encode(rgb).latent_dist.sample()* VAE_LATENT_SCALE)
+
         targets[0] = image_target
 
-        return targets
 
-    # =========================================================
-    # Legacy non-SigLIP branch
-    # =========================================================
-    if not uses_siglip_image_encoder(model):
-        return x
-
-    # =========================================================
-    # Existing SigLIP + CNN decoder branch
+    # -----------------------------------------------------
+    # Case 3:
+    # CNN encoder + CNN decoder
     #
-    # SigLIP encoder sees RGB, but the old image decoder
-    # reconstructs an SD-VAE latent [4,32,32].
-    # =========================================================
+    # Existing legacy behaviour.
+    #
+    # targets[0] remains x[0].
+    # -----------------------------------------------------
+    elif image_encoder_arch == "cnn" and image_decoder_arch == "cnn":
+        pass
 
-    rgb = x[0]
 
-    vae = model.pretrained_vae
+    # -----------------------------------------------------
+    # Any other combination has not been implemented.
+    # -----------------------------------------------------
+    else:
 
-    if vae is None:
-        raise RuntimeError(
-            "SigLIP + non-ViTMAE image decoder requires "
-            "model.pretrained_vae, but it is None."
+        raise ValueError(
+            "Unsupported image architecture combination: "
+            f"encoder={image_encoder_arch}, "
+            f"decoder={image_decoder_arch}"
         )
 
-    vae_device = next(
-        vae.parameters()
-    ).device
 
-    rgb = (
-        rgb.to(vae_device)
-        .float()
-        .mul(2)
-        .sub(1)
-    )
+    # =====================================================
+    # TEXT RECONSTRUCTION TARGET
+    # =====================================================
 
-    # Target only -> gradients unnecessary.
-    with torch.no_grad():
+    # -----------------------------------------------------
+    # Existing CNN text decoder:
+    #
+    # target is your current [32, vocab_size] one-hot
+    # caption representation.
+    # -----------------------------------------------------
+    if text_decoder_arch == "cnn":
 
-        image_target = (
-            vae
-            .encode(rgb)
-            .latent_dist
-            .sample()
-            * VAE_LATENT_SCALE
+        targets[1] = x[1]
+
+
+    # -----------------------------------------------------
+    # New BART decoder:
+    #
+    # x[1] remains the custom one-hot representation used
+    # by the EXISTING text encoder.
+    #
+    # x[2] is the auxiliary BART-tokenized target used only
+    # by the BART decoder.
+    # -----------------------------------------------------
+    elif text_decoder_arch == "bart":
+
+        if len(x) < 3:
+            raise RuntimeError(
+                "BART text decoder requires BART-tokenized "
+                "target IDs in x[2]."
+            )
+
+        targets[1] = x[2]
+
+
+    else:
+
+        raise ValueError(
+            "Unsupported text decoder architecture: "
+            f"{text_decoder_arch}"
         )
 
-    targets = list(x)
-
-    # Replace ONLY image reconstruction target.
-    targets[0] = image_target
 
     return targets
-
 
 def prepare_augmented_data_for_encoder(
     model,
@@ -129,90 +183,183 @@ def prepare_augmented_data_for_encoder(
     view_index,
 ):
     """
-    Convert generated image data into the representation expected
-    by the image encoder during generative augmentation.
+    Convert generated data into the representation expected
+    by the corresponding encoder during generative augmentation.
 
+    Cases
+    -----
     Text modality:
         unchanged
 
-    CNN image encoder:
+    CNN image encoder + CNN image decoder:
         unchanged
 
-    SigLIP + ViT-MAE:
-        decoder already outputs RGB -> feed RGB to SigLIP
+    SigLIP image encoder + ViT-MAE image decoder:
+        ViT-MAE already generates RGB -> feed RGB directly to SigLIP
 
-    SigLIP + old CNN image decoder:
-        decoder outputs SD latent -> SD-VAE decode -> RGB -> SigLIP
+    SigLIP image encoder + CNN image decoder:
+        CNN generates SD-VAE latent -> decode latent to RGB
+        -> feed RGB to SigLIP
     """
 
-    # Text modality or original CNN image encoder:
-    # nothing changes.
+    image_encoder_arch = getattr(
+        model.params,
+        "image_encoder_arch",
+        "cnn",
+    )
+
+    image_decoder_arch = getattr(
+        model.params,
+        "image_decoder_arch",
+        "cnn",
+    )
+
+    # =========================================================
+    # TEXT MODALITY
+    # =========================================================
+    #
+    # view_index:
+    #   0 -> image
+    #   1 -> text
+    #
+    # Text augmentation is handled elsewhere and does not
+    # require image-space conversion.
+    # =========================================================
+
+    if view_index != 0:
+        return aug_data
+
+
+    # =========================================================
+    # IMAGE: CNN encoder + CNN decoder
+    # =========================================================
+    #
+    # Generated output is already in the representation expected
+    # by the CNN image encoder.
+    # =========================================================
+
     if (
-        view_index != 0
-        or not uses_siglip_image_encoder(model)
+        image_encoder_arch == "cnn"
+        and image_decoder_arch == "cnn"
     ):
         return aug_data
 
-    # =========================================================
-    # NEW: SigLIP + ViT-MAE
-    #
-    # aug_data is already RGB from the ViT-MAE decoder.
-    # No SD-VAE conversion is necessary.
-    # =========================================================
-    if uses_vitmae_image_decoder(model):
 
-        # SigLIPEncoderImg expects RGB values in [0,1].
+    # =========================================================
+    # IMAGE: SigLIP encoder + ViT-MAE decoder
+    # =========================================================
+    #
+    # ViT-MAE decoder already generates RGB:
+    #
+    #       latent
+    #         ↓
+    #      ViT-MAE
+    #         ↓
+    #       RGB
+    #         ↓
+    #      SigLIP
+    #
+    # Therefore no SD-VAE conversion is needed.
+    # =========================================================
+
+    if (
+        image_encoder_arch == "siglip"
+        and image_decoder_arch == "vitmae"
+    ):
+
+        # SigLIPEncoderImg expects RGB in [0,1].
         #
-        # Do NOT detach / use torch.no_grad():
-        # GenAug gradients must propagate:
+        # IMPORTANT:
+        # Do NOT detach and do NOT use torch.no_grad().
         #
-        # SigLIP
-        #   ↓
+        # GenAug gradients must be able to propagate:
+        #
+        # GenAug loss
+        #     ↓
+        # SigLIP encoder
+        #     ↓
         # generated RGB
-        #   ↓
+        #     ↓
         # ViT-MAE decoder
-        #   ↓
+        #     ↓
         # IDMVAE latent
-        return aug_data.clamp(0.0, 1.0)
-
-    # =========================================================
-    # Existing SigLIP + CNN decoder
-    #
-    # aug_data is [B,4,32,32] SD-VAE latent.
-    # Convert it back to RGB before feeding SigLIP.
-    # =========================================================
-
-    vae = model.pretrained_vae
-
-    if vae is None:
-        raise RuntimeError(
-            "SigLIP + non-ViTMAE image decoder requires "
-            "model.pretrained_vae for GenAug, but it is None."
+        return aug_data.clamp(
+            0.0,
+            1.0,
         )
 
-    vae_device = next(
-        vae.parameters()
-    ).device
 
-    latent = aug_data.to(vae_device)
-
-    # IMPORTANT:
-    # no torch.no_grad() here.
+    # =========================================================
+    # IMAGE: SigLIP encoder + CNN decoder
+    # =========================================================
     #
-    # SD-VAE parameters are frozen, but gradients must pass:
+    # The old CNN decoder generates an SD-VAE latent:
     #
-    # SigLIP
-    #   -> SD-VAE decoder
-    #   -> IDMVAE image decoder
-    rgb = vae.decode(
-        latent / VAE_LATENT_SCALE
-    ).sample
+    #       latent
+    #         ↓
+    #    CNN decoder
+    #         ↓
+    #   [4,32,32] SD latent
+    #         ↓
+    #   SD-VAE decoder
+    #         ↓
+    #        RGB
+    #         ↓
+    #      SigLIP
+    #
+    # Therefore we must decode the generated SD latent back
+    # to RGB before passing it to SigLIP.
+    # =========================================================
 
-    rgb = (
-        rgb
-        .add(1)
-        .div(2)
-        .clamp(0, 1)
+    if (
+        image_encoder_arch == "siglip"
+        and image_decoder_arch == "cnn"
+    ):
+
+        vae = model.pretrained_vae
+
+        if vae is None:
+            raise RuntimeError(
+                "SigLIP + CNN image decoder requires "
+                "model.pretrained_vae for generative "
+                "augmentation, but it is None."
+            )
+
+        vae_device = next(
+            vae.parameters()
+        ).device
+
+        latent = aug_data.to(
+            vae_device
+        )
+
+        # IMPORTANT:
+        # no torch.no_grad() here.
+        #
+        # The SD-VAE parameters themselves can be frozen,
+        # but autograd must pass THROUGH its decoder so that
+        # the GenAug loss reaches the IDMVAE decoder.
+        rgb = vae.decode(
+            latent / VAE_LATENT_SCALE
+        ).sample
+
+        rgb = (
+            rgb
+            .add(1)
+            .div(2)
+            .clamp(0.0, 1.0)
+        )
+
+        return rgb
+
+
+    # =========================================================
+    # Unsupported combination
+    # =========================================================
+
+    raise ValueError(
+        "Unsupported image architecture combination "
+        "during generative augmentation: "
+        f"encoder={image_encoder_arch}, "
+        f"decoder={image_decoder_arch}"
     )
-
-    return rgb

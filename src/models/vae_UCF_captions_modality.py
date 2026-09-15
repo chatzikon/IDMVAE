@@ -9,36 +9,118 @@ import torch.distributions as dist
 
 from .base_vae import VAE
 from .encoder_decoder_blocks.cnn_ucf_text import Enc, Dec
+from .encoder_decoder_blocks.bart_ucf_text import BartLatentDecoder
 
 
 # Constants
-maxSentLen = 48  # max length of any description for birds dataset
+maxSentLen = 32  # max length of any description for birds dataset
 minOccur = 3
 embeddingDim = 128
 lenWindow = 3
 fBase = 32
-vocabSize = 1590
+vocabSize = 2505
 
 
 class UCF_Sentence(VAE):
-    """ Unimodal VAE subclass for Text modality CUB experiment """
 
-    def __init__(self, vocab_size, params):
-        super(UCF_Sentence, self).__init__(
-            prior_dist=dist.Normal if params.priorposterior == 'Normal' else dist.Laplace,      # prior (continuous)
-            likelihood_dist=dist.OneHotCategorical,                                             # likelihood (discrete)
-            post_dist=dist.Normal if params.priorposterior == 'Normal' else dist.Laplace,       # posterior
-            enc=Enc(params.latent_dim_w, params.latent_dim_z, dist=params.priorposterior, vocab_size=vocab_size),      # Encoder model
-            dec=Dec(params.latent_dim_w, params.latent_dim_z, vocab_size=vocab_size),                                  # Decoder model
-            params=params)                                                                      # Params (args passed to main)
+    def __init__(
+        self,
+        vocab_size,
+        params,
+    ):
 
-        self.modelName = 'cubC'
-        self.llik_scaling = 1.
+        self.text_decoder_arch = getattr(params,"text_decoder_arch", "cnn")
 
-        self.fn_2i = lambda t: t.cpu().numpy().astype(int)
-        self.fn_trun = lambda s: s[:np.where(s == 2)[0][0] + 1] if 2 in s else s
+        # ==================================================
+        # TEXT ENCODER
+        #
+        # Always the SAME existing CNN encoder.
+        # ==================================================
 
-        self.maxSentLen = maxSentLen
-        self.vocabSize = vocabSize
+        enc = Enc(params.latent_dim_w,params.latent_dim_z,dist=params.priorposterior,vocab_size=vocab_size)
+
+        # ==================================================
+        # SELECT TEXT DECODER
+        # ==================================================
+
+        if self.text_decoder_arch == "cnn":
+
+            dec = Dec(params.latent_dim_w,params.latent_dim_z,vocab_size=vocab_size)
+
+        elif self.text_decoder_arch == "bart":
+
+            dec = BartLatentDecoder(latent_dim_w=params.latent_dim_w,latent_dim_z=params.latent_dim_z,
+                model_name=params.bart_model_name,memory_tokens_per_latent=(params.bart_memory_tokens_per_latent),
+                                    token_dropout=params.bart_token_dropout,
+                                    )
+
+        else:
+
+            raise ValueError(
+                "Unknown text decoder architecture: "
+                f"{self.text_decoder_arch}"
+            )
+
+        super().__init__(
+            prior_dist=(
+                dist.Normal
+                if params.priorposterior == "Normal"
+                else dist.Laplace
+            ),
+
+            likelihood_dist=dist.OneHotCategorical,
+
+            post_dist=(
+                dist.Normal
+                if params.priorposterior == "Normal"
+                else dist.Laplace
+            ),
+
+            enc=enc,
+            dec=dec,
+            params=params,
+        )
+
+        self.modelName = "cubC"
+        self.llik_scaling = 1.0
+
+        self.fn_2i = (
+            lambda t:
+            t.cpu().numpy().astype(int)
+        )
+
+        self.fn_trun = (
+            lambda s:
+            s[:np.where(s == 2)[0][0] + 1]
+            if 2 in s
+            else s
+        )
+
+        # Your actual current CNN encoder length.
+        self.maxSentLen = 32
+
+        # Do NOT use the old hard-coded 1590.
+        self.vocabSize = vocab_size
 
         self.params = params
+
+    def decode_likelihood(
+            self,
+            u,
+            reconstruction_target=None,
+    ):
+
+        if self.text_decoder_arch == "bart":
+
+            if reconstruction_target is None:
+                raise ValueError(
+                    "BART decoder requires BART-tokenized reconstruction targets during training.")
+
+            return self.dec(u, reconstruction_target)
+
+        # CNN:
+        # exact legacy behaviour.
+        return super().decode_likelihood(
+            u,
+            reconstruction_target,
+        )

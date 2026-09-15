@@ -287,6 +287,8 @@ class ViTMAEDecoderImg(nn.Module):
         else:
             rgb = rgb.float()
 
+
+
         if rgb.shape[-2:] != (
             self.image_size,
             self.image_size,
@@ -301,6 +303,8 @@ class ViTMAEDecoderImg(nn.Module):
                 align_corners=False,
                 antialias=True,
             )
+
+
 
         return rgb.clamp(0.0, 1.0)
 

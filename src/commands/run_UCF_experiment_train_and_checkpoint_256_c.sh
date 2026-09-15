@@ -37,7 +37,7 @@ if [ "$MODE" = "test" ]; then
 fi
 
 # Model hyperparameters (Appendix C.2: 50 epochs; λ1=40, λ2=10, diffusion 0.1)
-BATCH=16
+BATCH=2
 K=1
 EPOCHS=50
 SEED=2
@@ -173,9 +173,9 @@ CMD_ARGS_BASE=(
   "--lv_umap_min_dist" "${LV_MIN_DIST}"
   "--test_time_dataset_state" "${test_time_dataset_state}"
   "--num_workers" "${NUM_WORKERS}"
-  #"--use_pretrain_feats"
+  "--use_pretrain_feats"
   "--image_encoder_arch" "siglip"
-  "--image_decoder_arch" "vitmae"
+  "--text_decoder_arch" "bart"
   "--amp"
   #"--resume"
   #"--resume_from_CPt_runId"
@@ -184,7 +184,7 @@ CMD_ARGS_BASE=(
   #"--enable_img2text"
   #"--img2text_use_diffusion_prior"
   #"--enable_text2text_mean"
-  #"--checkpoint-path" "/home/chatziko/PycharmProjects/PythonProject/IDMVAE/outputs/UCF_release_18_29_21/checkpoints/09-11_0_gpu0_ltCL_TD_lw0.1_IEsiglip_IDvitmae_TDcnn_K1_B16_Normal_Laplace_b1.0_10.0_40.0_0.0_256_256_s2/model_25.rar"
+  #"--checkpoint-path" "/home/chatziko/PycharmProjects/PythonProject/IDMVAE/outputs/UCF_release_12_09_28/checkpoints/09-10_0_gpu0_ltCL_TD_lw0.1_K1_B4_Normal_Laplace_b1.0_10.0_40.0_0.0256_256_s2/model_25.rar"
 )
 
 if [ -n "${diff_stop_grad}" ]; then

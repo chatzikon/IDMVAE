@@ -139,7 +139,7 @@ class IDMVAE(nn.Module):
     def decoders(self):
         return [vae.dec for vae in self.vaes]
 
-    def forward(self, x, K=1):
+    def forward(self, x, K=1, reconstruction_targets=None):
         """
         Forward function.
         Input:
@@ -157,7 +157,13 @@ class IDMVAE(nn.Module):
         px_us = [[None for _ in range(len(self.vaes))] for _ in range(len(self.vaes))]
         # Loop over unimodal vaes
         for m, vae in enumerate(self.vaes):
-            qu_x, px_u, us = vae(x[m], K=K) # Get Encoding dist, Decoding dist, Latents for unimodal VAE m modality
+            target = (
+                None
+                if reconstruction_targets is None
+                else reconstruction_targets[m]
+            )
+
+            qu_x, px_u, us = vae(x[m],K=K,reconstruction_target=target)# Get Encoding dist, Decoding dist, Latents for unimodal VAE m modality
             qu_xs.append(qu_x) # Append encoding distribution to list
             uss.append(us) # Append latents to list
             px_us[m][m] = px_u  # Fill-in self-reconstructions in the matrix
@@ -178,7 +184,17 @@ class IDMVAE(nn.Module):
                     # Combine shared and resampled private latents
                     us_combined = torch.cat((latents_w, z_e), dim=-1)
                     # Get cross-reconstruction likelihood
-                    px_us[e][d] = vae.px_u(*vae.dec(us_combined))
+                    # Get target belonging to the DECODING modality d.
+                    target = (
+                        None
+                        if reconstruction_targets is None
+                        else reconstruction_targets[d]
+                    )
+
+                    px_us[e][d] = vae.decode_likelihood(
+                        us_combined,
+                        reconstruction_target=target,
+                    )
         return qu_xs, px_us, uss
 
     def _decode_latents_to_pixels(self, latents):
@@ -204,37 +220,303 @@ class IDMVAE(nn.Module):
         decoded = self.pretrained_vae.decode(latents.to(device) / 0.18215).sample
         return (decoded.add(1).div(2).clamp(0.0, 1.0))
 
-    def self_and_cross_modal_generation_forward(self, data, K=1):
+    def self_and_cross_modal_generation_forward(
+            self,
+            data,
+            K=1,
+    ):
         """
-        Test-time self- and cross-model generation forward function.
+        Test/validation-time self- and cross-modal generation.
+
+        IMPORTANT:
+            No reconstruction targets are passed to the decoders here.
+
+            CNN decoders:
+                Decode normally from the latent representation.
+
+            BART text decoder:
+                Generate autoregressively from the latent representation
+                using only its own previously generated tokens.
+
         Args:
-            data: Input
+            data:
+                Encoder inputs.
+
+                data[0] -> image
+                data[1] -> custom one-hot caption
+
+                If BART is enabled, data may also contain:
+                data[2] -> BART-tokenized GT caption
+
+                However, data[2] is deliberately NOT used here.
+
+            K:
+                Number of latent samples.
 
         Returns:
-            Unimodal encoding distribution, Matrix of self- and cross-modal reconstruction distrubutions, Latent embeddings
+            qu_xs:
+                List of unimodal posterior distributions.
 
+            px_us:
+                Matrix of self- and cross-modal outputs.
+
+                For normal CNN/image decoders:
+                    px_us[e][d] is a likelihood distribution.
+
+                For BART text decoder:
+                    px_us[e][1] is a tensor of generated token IDs
+                    with shape approximately [K, B, L_generated].
+
+            uss:
+                List of sampled latent representations.
         """
-        qu_xs, uss = [], []
-        # initialise cross-modal matrix
-        px_us = [[None for _ in range(len(self.vaes))] for _ in range(len(self.vaes))]
+
+        qu_xs = []
+        uss = []
+
+        num_modalities = len(self.vaes)
+
+        # =========================================================
+        # Architecture configuration
+        # =========================================================
+
+        text_decoder_arch = getattr(
+            self.params,
+            "text_decoder_arch",
+            "cnn",
+        )
+
+        bart_enabled = (
+                text_decoder_arch == "bart"
+        )
+
+        # =========================================================
+        # Initialize output matrix
+        #
+        # For two modalities:
+        #
+        # px_us[0][0] -> image -> image
+        # px_us[0][1] -> image -> text
+        # px_us[1][0] -> text  -> image
+        # px_us[1][1] -> text  -> text
+        # =========================================================
+
+        px_us = [
+            [None for _ in range(num_modalities)]
+            for _ in range(num_modalities)
+        ]
+
+        # =========================================================
+        # 1. ENCODE EACH MODALITY
+        # =========================================================
+        #
+        # We deliberately do NOT call:
+        #
+        #     vae(data[m], K=K)
+        #
+        # because VAE.forward() also performs decoding.
+        #
+        # For BART during validation/test we do not want the
+        # teacher-forced decoding path.
+        #
+        # Therefore we perform only:
+        #
+        #     input -> encoder -> posterior -> latent sample
+        #
+        # here.
+        # =========================================================
+
         for m, vae in enumerate(self.vaes):
-            qu_x, px_u, us = vae(data[m], K=K)
+            # Get posterior parameters from encoder.
+            vae._qu_x_params = vae.enc(
+                data[m]
+            )
+
+            # Construct posterior distribution.
+            qu_x = vae.qu_x(
+                *vae._qu_x_params
+            )
+
+            # Reparameterized latent samples:
+            #
+            # [K, B, W+Z]
+            us = qu_x.rsample(
+                torch.Size([K])
+            )
+
             qu_xs.append(qu_x)
             uss.append(us)
-            px_us[m][m] = px_u  # fill-in diagonal
+
+        # =========================================================
+        # 2. SELF-MODAL GENERATION
+        # =========================================================
+
+        for m, vae in enumerate(self.vaes):
+
+            us = uss[m]
+
+            # -----------------------------------------------------
+            # Text -> Text with BART
+            #
+            # Generate autoregressively.
+            #
+            # NO ground-truth BART token IDs are supplied.
+            # -----------------------------------------------------
+
+            if (
+                    m == 1
+                    and bart_enabled
+            ):
+
+                px_us[m][m] = vae.dec.generate(
+                    us,
+                    max_new_tokens=(
+                        self.params.bart_max_length
+                    ),
+                )
+
+
+            # -----------------------------------------------------
+            # Existing decoder behaviour
+            #
+            # Image decoder or CNN text decoder.
+            # -----------------------------------------------------
+
+            else:
+
+                px_us[m][m] = (
+                    vae.decode_likelihood(
+                        us
+                    )
+                )
+
+        # =========================================================
+        # 3. CROSS-MODAL GENERATION
+        # =========================================================
+
         for e, us in enumerate(uss):
-            _, latents_z = torch.split(us, [self.params.latent_dim_w, self.params.latent_dim_z], dim=-1)
+
+            # -----------------------------------------------------
+            # Keep only shared z from source modality e.
+            #
+            # us:
+            #     [K,B,W+Z]
+            #
+            # latents_z:
+            #     [K,B,Z]
+            # -----------------------------------------------------
+
+            _, latents_z = torch.split(
+                us,
+                [
+                    self.params.latent_dim_w,
+                    self.params.latent_dim_z,
+                ],
+                dim=-1,
+            )
+
             for d, vae in enumerate(self.vaes):
-                # Note the different from forward():
-                # 1. Here we use diffusion prior when possible.
-                # 2. Here we use aux=False, i.e., non-learnable prior instead of learnable auxiliary prior.
-                #    This is consistent with the original MMVAE+ implementation.
+
+                # Diagonal was already handled above.
+                if e == d:
+                    continue
+
+                # =================================================
+                # Sample private w for TARGET modality d
+                # =================================================
+                #
+                # Test-time behavior follows your existing logic:
+                #
+                # diffusion prior when enabled,
+                # otherwise standard non-auxiliary prior.
+                # =================================================
+
                 if self.diffusion_loss_weight > 0.0:
+
                     pw = self.pws_diffusion[d]
+
                 else:
-                    pw = self.get_simple_prior_w(view=d, aux=False)
-                latents_w_new = pw.rsample(torch.Size([us.size()[0], us.size()[1]])).squeeze(2)
-                us_new = torch.cat((latents_w_new, latents_z), dim=-1)
-                if e != d:  # fill-in off-diagonal
-                    px_us[e][d] = vae.px_u(*vae.dec(us_new))
-        return qu_xs, px_us, uss
+
+                    pw = self.get_simple_prior_w(
+                        view=d,
+                        aux=False,
+                    )
+
+                latents_w_new = pw.rsample(
+                    torch.Size([
+                        us.size(0),
+                        us.size(1),
+                    ])
+                ).squeeze(2)
+
+                # =================================================
+                # Combine:
+                #
+                # private w from TARGET modality d
+                # +
+                # shared z from SOURCE modality e
+                # =================================================
+
+                us_new = torch.cat(
+                    (
+                        latents_w_new,
+                        latents_z,
+                    ),
+                    dim=-1,
+                )
+
+                # =================================================
+                # BART TEXT GENERATION
+                # =================================================
+                #
+                # d == 1 means the destination modality is text.
+                #
+                # Example:
+                #
+                # e = 0
+                # d = 1
+                #
+                # image z
+                #   +
+                # sampled text w
+                #   ↓
+                # BART
+                #   ↓
+                # autoregressive caption
+                #
+                # Ground-truth text is NEVER passed to BART.
+                # =================================================
+
+                if (
+                        d == 1
+                        and bart_enabled
+                ):
+
+                    px_us[e][d] = (
+                        vae.dec.generate(
+                            us_new,
+                            max_new_tokens=(
+                                self.params.bart_max_length
+                            ),
+                        )
+                    )
+
+
+                # =================================================
+                # EXISTING CNN / IMAGE DECODING
+                # =================================================
+
+                else:
+
+                    px_us[e][d] = (
+                        vae.decode_likelihood(
+                            us_new
+                        )
+                    )
+
+        return (
+            qu_xs,
+            px_us,
+            uss,
+        )
+
