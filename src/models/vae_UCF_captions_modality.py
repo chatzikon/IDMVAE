@@ -10,6 +10,7 @@ import torch.distributions as dist
 from .base_vae import VAE
 from .encoder_decoder_blocks.cnn_ucf_text import Enc, Dec
 from .encoder_decoder_blocks.bart_ucf_text import BartLatentDecoder
+from .encoder_decoder_blocks.bert_ucf_text import BertTextEncoder, BertLatentDecoder
 
 
 # Constants
@@ -29,15 +30,37 @@ class UCF_Sentence(VAE):
         params,
     ):
 
+        self.text_encoder_arch = getattr(params,"text_encoder_arch", "cnn")
         self.text_decoder_arch = getattr(params,"text_decoder_arch", "cnn")
 
         # ==================================================
-        # TEXT ENCODER
-        #
-        # Always the SAME existing CNN encoder.
+        # SELECT TEXT ENCODER
         # ==================================================
 
-        enc = Enc(params.latent_dim_w,params.latent_dim_z,dist=params.priorposterior,vocab_size=vocab_size)
+        if self.text_encoder_arch == "cnn":
+
+            enc = Enc(
+                params.latent_dim_w,
+                params.latent_dim_z,
+                dist=params.priorposterior,
+                vocab_size=vocab_size,
+            )
+
+        elif self.text_encoder_arch == "bert":
+
+            enc = BertTextEncoder(
+                latent_dim_w=params.latent_dim_w,
+                latent_dim_z=params.latent_dim_z,
+                dist_name=params.priorposterior,
+                model_name=params.bert_model_name,
+            )
+
+        else:
+
+            raise ValueError(
+                "Unknown text encoder architecture: "
+                f"{self.text_encoder_arch}"
+            )
 
         # ==================================================
         # SELECT TEXT DECODER
@@ -45,14 +68,35 @@ class UCF_Sentence(VAE):
 
         if self.text_decoder_arch == "cnn":
 
-            dec = Dec(params.latent_dim_w,params.latent_dim_z,vocab_size=vocab_size)
+            dec = Dec(
+                params.latent_dim_w,
+                params.latent_dim_z,
+                vocab_size=vocab_size,
+            )
 
         elif self.text_decoder_arch == "bart":
 
-            dec = BartLatentDecoder(latent_dim_w=params.latent_dim_w,latent_dim_z=params.latent_dim_z,
-                model_name=params.bart_model_name,memory_tokens_per_latent=(params.bart_memory_tokens_per_latent),
-                                    token_dropout=params.bart_token_dropout,
-                                    )
+            dec = BartLatentDecoder(
+                latent_dim_w=params.latent_dim_w,
+                latent_dim_z=params.latent_dim_z,
+                model_name=params.bart_model_name,
+                memory_tokens_per_latent=(
+                    params.bart_memory_tokens_per_latent
+                ),
+                token_dropout=params.bart_token_dropout,
+            )
+
+        elif self.text_decoder_arch == "bert":
+
+            dec = BertLatentDecoder(
+                latent_dim_w=params.latent_dim_w,
+                latent_dim_z=params.latent_dim_z,
+                model_name=params.bert_model_name,
+                memory_tokens_per_latent=(
+                    params.bert_memory_tokens_per_latent
+                ),
+                max_length=params.bert_max_length,
+            )
 
         else:
 
@@ -114,12 +158,23 @@ class UCF_Sentence(VAE):
 
             if reconstruction_target is None:
                 raise ValueError(
-                    "BART decoder requires BART-tokenized reconstruction targets during training.")
+                    "BART decoder requires BART-tokenized "
+                    "reconstruction targets during training."
+                )
 
-            return self.dec(u, reconstruction_target)
+            return self.dec(
+                u,
+                reconstruction_target,
+            )
 
-        # CNN:
-        # exact legacy behaviour.
+        if self.text_decoder_arch == "bert":
+            # IMPORTANT:
+            # reconstruction_target is deliberately ignored.
+            #
+            # BERT receives ONLY the IDMVAE latent.
+            return self.dec(u)
+
+        # CNN: exact legacy behaviour.
         return super().decode_likelihood(
             u,
             reconstruction_target,

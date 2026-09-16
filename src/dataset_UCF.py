@@ -164,6 +164,8 @@ class UCFDataset(Dataset):
         self.use_pretrain_feats = use_pretrain_feats
 
         self.text_decoder_arch = getattr(args,"text_decoder_arch","cnn")
+        self.text_encoder_arch = getattr(args,"text_encoder_arch","cnn")
+
 
         if self.text_decoder_arch == "bart":
 
@@ -175,6 +177,28 @@ class UCFDataset(Dataset):
             self.bart_tokenizer = None
             self.bart_max_length = None
 
+        if self.text_encoder_arch == "bert" or self.text_decoder_arch == "bert":
+
+            self.bert_tokenizer = (
+                AutoTokenizer.from_pretrained(
+                    getattr(
+                        args,
+                        "bert_model_name",
+                        "bert-base-uncased",
+                    )
+                )
+            )
+
+            self.bert_max_length = getattr(
+                args,
+                "bert_max_length",
+                64,
+            )
+
+        else:
+
+            self.bert_tokenizer = None
+            self.bert_max_length = None
 
         if shared_data is not None:
             self.images = shared_data["images"]
@@ -282,23 +306,71 @@ class UCFDataset(Dataset):
 
         # raw caption string
         raw = self.captions[img_idx][cap_idx]
-        # tokenize + truncate or pad
-        toks = word_tokenize(raw.lower())
-        # truncate and add eos
-        if len(toks) >= self.max_sent_len:
-            toks = toks[:self.max_sent_len-1] + [self.eos_token]
+
+        if self.text_encoder_arch == "bert":
+            bert_tokens = self.bert_tokenizer(
+                raw,
+                add_special_tokens=True,
+                max_length=self.bert_max_length,
+                truncation=True,
+                padding="max_length",
+                return_tensors="pt",
+            )
+
+            bert_ids = (
+                bert_tokens["input_ids"]
+                .squeeze(0)
+                .long()
+            )
+
+            # Two actual IDMVAE modalities:
+            #
+            # data[0] -> image
+            # data[1] -> BERT token IDs
+            #
+            # Unlike BART mode, BERT needs no auxiliary x[2].
+            datas = (
+                img,
+                bert_ids,
+            )
+
         else:
-            toks = toks + [self.eos_token]
-        # pad
-        if len(toks) < self.max_sent_len:
-            toks = toks + [self.pad_token] * (self.max_sent_len - len(toks))
-        # indices
-        idxs = [self.w2i.get(t, self.unk_idx) for t in toks]
-        idx_tensor = torch.tensor(idxs, dtype=torch.long)
-        # one-hot
-        cap_tensor = F.one_hot(idx_tensor, num_classes=self.vocab_size).float()
+
+            # tokenize + truncate or pad
+            toks = word_tokenize(raw.lower())
+            # truncate and add eos
+            if len(toks) >= self.max_sent_len:
+                toks = toks[:self.max_sent_len-1] + [self.eos_token]
+            else:
+                toks = toks + [self.eos_token]
+            # pad
+            if len(toks) < self.max_sent_len:
+                toks = toks + [self.pad_token] * (self.max_sent_len - len(toks))
+            # indices
+            idxs = [self.w2i.get(t, self.unk_idx) for t in toks]
+            idx_tensor = torch.tensor(idxs, dtype=torch.long)
+            # one-hot
+            cap_tensor = F.one_hot(idx_tensor, num_classes=self.vocab_size).float()
 
 
+            if self.text_decoder_arch == "bart":
+
+                bart_tokens = self.bart_tokenizer(
+                    raw,
+                    add_special_tokens=True,
+                    max_length=self.bart_max_length,
+                    truncation=True,
+                    padding="max_length",
+                    return_tensors="pt",
+                )
+
+                bart_ids = bart_tokens["input_ids"].squeeze(0).long()
+
+                datas = (img, cap_tensor, bart_ids)
+
+            else:
+
+                datas = (img, cap_tensor)
 
         # labels
         lbl_cluster = int(self.labels_cluster[img_idx])
@@ -309,25 +381,6 @@ class UCFDataset(Dataset):
         img_id = self.image_ids[img_idx] if self.image_ids is not None else None
         dataset_index = img_idx  # This is the index of the image in the original dataset
         subset_index = idx  # This is the index in the subset of pairs (img_idx, cap_idx)
-
-        if self.text_decoder_arch == "bart":
-
-            bart_tokens = self.bart_tokenizer(
-                raw,
-                add_special_tokens=True,
-                max_length=self.bart_max_length,
-                truncation=True,
-                padding="max_length",
-                return_tensors="pt",
-            )
-
-            bart_ids = bart_tokens["input_ids"].squeeze(0).long()
-
-            datas = (img, cap_tensor, bart_ids)
-
-        else:
-
-            datas = (img, cap_tensor)
 
         labels = (lbl_cluster,lbl_color,lbl_category,img_id,dataset_index)
 

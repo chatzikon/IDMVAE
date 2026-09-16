@@ -817,16 +817,21 @@ def compute_gen_aug_loss_oneview(
     # GenAug path. All other decoders keep the original path.
     # ---------------------------------------------------------
 
-    is_bart_text = (
-            view_index == 1
-            and getattr(
+    text_decoder_arch = getattr(
         model.params,
         "text_decoder_arch",
         "cnn",
-    ) == "bart"
     )
 
-    if is_bart_text:
+    is_continuous_pretrained_text = (
+            view_index == 1
+            and text_decoder_arch in (
+                "bart",
+                "bert",
+            )
+    )
+
+    if is_continuous_pretrained_text:
 
         # -----------------------------------------------------
         # BART text GenAug

@@ -463,6 +463,570 @@ def diagnose_bart_latent_usage(
         "=== END BART LATENT DIAGNOSTIC ===\n"
     )
 
+@torch.inference_mode()
+def diagnose_bert_latent_to_text(
+    max_batches=5,
+    num_examples=8,
+):
+    """
+    Verify the non-autoregressive BERT latent->text pathway.
+
+    Checks:
+        1. posterior statistics
+        2. latent-only reconstruction
+        3. shuffled-latent reconstruction
+        4. correct-vs-shuffled NLL
+        5. prior generation
+
+    IMPORTANT:
+        Ground-truth caption IDs are NEVER supplied to the BERT
+        decoder as decoder input.
+
+        They are used only:
+            - by the BERT encoder
+            - afterward as targets for log_prob()
+            - afterward for human-readable reference printing
+    """
+
+    if getattr(
+        model.params,
+        "text_decoder_arch",
+        "cnn",
+    ) != "bert":
+
+        print(
+            "Skipping BERT latent diagnostic: "
+            "text decoder is not BERT."
+        )
+        return
+
+    print(
+        "\n"
+        "=========================================\n"
+        "=== BERT LATENT -> TEXT DIAGNOSTIC =====\n"
+        "========================================="
+    )
+
+    model.eval()
+
+    text_vae = model.vaes[1]
+
+    W = model.params.latent_dim_w
+    Z = model.params.latent_dim_z
+
+    pad_id = text_vae.dec.pad_token_id
+
+    # ---------------------------------------------------------
+    # Aggregate posterior statistics
+    # ---------------------------------------------------------
+
+    all_w_means = []
+    all_z_means = []
+
+    all_w_scales = []
+    all_z_scales = []
+
+    nll_correct_sum = 0.0
+    nll_shuffled_sum = 0.0
+    token_count = 0
+
+    generated_correct_all = []
+    generated_shuffled_all = []
+
+    num_changed_generations = 0
+    num_compared_generations = 0
+
+    examples_printed = 0
+
+    token_difference_sum = 0
+    token_difference_count = 0
+
+    for batch_idx, dataT in enumerate(
+        test_time_loader
+    ):
+
+        if batch_idx >= max_batches:
+            break
+
+        data, _ = unpack_data_CUBcluster8(
+            dataT,
+            device=device,
+        )
+
+        # =====================================================
+        # BERT text modality
+        #
+        # captions:
+        #     [B,L] integer BERT token IDs
+        # =====================================================
+
+        captions = data[1]
+
+        B = captions.size(0)
+
+        # -----------------------------------------------------
+        # 1. Encode caption
+        # -----------------------------------------------------
+
+        qu_params = text_vae.enc(
+            captions
+        )
+
+        qu_text = text_vae.qu_x(
+            *qu_params
+        )
+
+        mean = qu_text.mean
+        scale = qu_text.scale
+
+        w_mean, z_mean = torch.split(
+            mean,
+            [W, Z],
+            dim=-1,
+        )
+
+        w_scale, z_scale = torch.split(
+            scale,
+            [W, Z],
+            dim=-1,
+        )
+
+        all_w_means.append(
+            w_mean.cpu()
+        )
+
+        all_z_means.append(
+            z_mean.cpu()
+        )
+
+        all_w_scales.append(
+            w_scale.cpu()
+        )
+
+        all_z_scales.append(
+            z_scale.cpu()
+        )
+
+        # =====================================================
+        # 2. Correct posterior mean
+        # =====================================================
+
+        # [B,W+Z] -> [1,B,W+Z]
+        u_correct = (
+            mean.unsqueeze(0)
+        )
+
+        # NO GT supplied to decoder.
+        px_correct = (
+            text_vae.decode_likelihood(
+                u_correct
+            )
+        )
+
+        # [1,B,L]
+        ids_correct = (
+            px_correct.mode
+            .squeeze(0)
+        )
+
+        if batch_idx == 0:
+            print(
+                "\n=== BERT SHAPE CHECK ==="
+            )
+
+            print(
+                "caption IDs:",
+                captions.shape,
+                captions.dtype,
+            )
+
+            print(
+                "posterior mean:",
+                mean.shape,
+            )
+
+            print(
+                "posterior scale:",
+                scale.shape,
+            )
+
+            print(
+                "latent u:",
+                u_correct.shape,
+            )
+
+            print(
+                "decoder logits:",
+                px_correct.logits.shape,
+            )
+
+            print(
+                "generated IDs:",
+                ids_correct.shape,
+            )
+
+            print(
+                "=== END SHAPE CHECK ===\n"
+            )
+
+
+
+        # =====================================================
+        # 3. Shuffled posterior mean
+        # =====================================================
+
+        # Deterministic non-identity shuffle.
+        if B > 1:
+
+            perm = torch.roll(
+                torch.arange(
+                    B,
+                    device=mean.device,
+                ),
+                shifts=1,
+            )
+
+        else:
+
+            perm = torch.arange(
+                B,
+                device=mean.device,
+            )
+
+        u_shuffled = (
+            u_correct[:, perm]
+        )
+
+        # Again: latent only.
+        px_shuffled = (
+            text_vae.decode_likelihood(
+                u_shuffled
+            )
+        )
+
+        ids_shuffled = (
+            px_shuffled.mode
+            .squeeze(0)
+        )
+
+        changed = (
+                ids_correct
+                != ids_shuffled
+        ).any(dim=-1)
+
+        num_changed_generations += (
+            changed.sum().item()
+        )
+
+        num_compared_generations += B
+
+        valid = (
+                captions
+                != pad_id
+        )
+
+        token_different = (
+                ids_correct
+                != ids_shuffled
+        )
+
+        token_difference_sum += (
+                token_different
+                & valid
+        ).sum().item()
+
+        token_difference_count += (
+            valid.sum().item()
+        )
+
+        # =====================================================
+        # 4. Likelihood diagnostic
+        #
+        # GT enters ONLY HERE as the reconstruction target.
+        # =====================================================
+
+        logp_correct = (
+            px_correct.log_prob(
+                captions
+            )
+        )
+
+        logp_shuffled = (
+            px_shuffled.log_prob(
+                captions
+            )
+        )
+
+        nll_correct_sum += (
+            -logp_correct.sum().item()
+        )
+
+        nll_shuffled_sum += (
+            -logp_shuffled.sum().item()
+        )
+
+        token_count += (
+            captions != pad_id
+        ).sum().item()
+
+        # =====================================================
+        # 5. Decode strings
+        # =====================================================
+
+        refs = (
+            text_vae.dec.decode_batch(
+                captions
+            )
+        )
+
+        generated_correct = (
+            text_vae.dec.decode_batch(
+                ids_correct
+            )
+        )
+
+        generated_shuffled = (
+            text_vae.dec.decode_batch(
+                ids_shuffled
+            )
+        )
+
+        generated_correct_all.extend(
+            generated_correct
+        )
+
+        generated_shuffled_all.extend(
+            generated_shuffled
+        )
+
+        # =====================================================
+        # 6. Print a few examples
+        # =====================================================
+
+        for i in range(B):
+
+            if examples_printed >= num_examples:
+                break
+
+            source_i = int(
+                perm[i].item()
+            )
+
+            print(
+                "\n-----------------------------------------"
+            )
+
+            print(
+                f"Example {examples_printed + 1}"
+            )
+
+            print(
+                "GT:"
+            )
+
+            print(
+                "   ",
+                refs[i],
+            )
+
+            print(
+                "\nCorrect latent reconstruction:"
+            )
+
+            print(
+                "   ",
+                generated_correct[i],
+            )
+
+            print(
+                "\nShuffled latent reconstruction:"
+            )
+
+            print(
+                "   ",
+                generated_shuffled[i],
+            )
+
+            print(
+                f"\nShuffled latent came from "
+                f"batch sample {source_i}"
+            )
+
+            examples_printed += 1
+
+    # =========================================================
+    # Aggregate statistics
+    # =========================================================
+
+    w_means = torch.cat(
+        all_w_means,
+        dim=0,
+    )
+
+    z_means = torch.cat(
+        all_z_means,
+        dim=0,
+    )
+
+    w_scales = torch.cat(
+        all_w_scales,
+        dim=0,
+    )
+
+    z_scales = torch.cat(
+        all_z_scales,
+        dim=0,
+    )
+
+    def between_sample_std(x):
+
+        return (
+            x.std(
+                dim=0,
+                unbiased=False,
+            )
+            .mean()
+            .item()
+        )
+
+    nll_correct = (
+        nll_correct_sum
+        / max(token_count, 1)
+    )
+
+    nll_shuffled = (
+        nll_shuffled_sum
+        / max(token_count, 1)
+    )
+
+    # =========================================================
+    # Diversity
+    # =========================================================
+
+    num_correct = len(
+        generated_correct_all
+    )
+
+    unique_correct = len(
+        set(generated_correct_all)
+    )
+
+    unique_shuffled = len(
+        set(generated_shuffled_all)
+    )
+
+    print(
+        "\n"
+        "=========================================\n"
+        "=== BERT LATENT STATISTICS =============\n"
+        "========================================="
+    )
+
+    print(
+        "w_txt |mean|:",
+        w_means.abs().mean().item(),
+    )
+
+    print(
+        "w_txt between-sample std:",
+        between_sample_std(
+            w_means
+        ),
+    )
+
+    print(
+        "z_txt |mean|:",
+        z_means.abs().mean().item(),
+    )
+
+    print(
+        "z_txt between-sample std:",
+        between_sample_std(
+            z_means
+        ),
+    )
+
+    print(
+        "w_txt scale mean:",
+        w_scales.mean().item(),
+    )
+
+    print(
+        "w_txt scale between-sample std:",
+        between_sample_std(
+            w_scales
+        ),
+    )
+
+    print(
+        "z_txt scale mean:",
+        z_scales.mean().item(),
+    )
+
+    print(
+        "z_txt scale between-sample std:",
+        between_sample_std(
+            z_scales
+        ),
+    )
+
+    print(
+        "\n"
+        "=========================================\n"
+        "=== BERT LATENT USAGE ==================\n"
+        "========================================="
+    )
+
+    print(
+        "NLL/token - correct latent:",
+        nll_correct,
+    )
+
+    print(
+        "NLL/token - shuffled latent:",
+        nll_shuffled,
+    )
+
+    print(
+        "Shuffle NLL increase:",
+        nll_shuffled
+        - nll_correct,
+    )
+
+    print(
+        "Unique correct-latent generations:",
+        f"{unique_correct}/{num_correct}",
+    )
+
+    print(
+        "Unique shuffled-latent generations:",
+        f"{unique_shuffled}/{num_correct}",
+    )
+
+    print(
+        "Generation changed after latent shuffle:",
+        f"{num_changed_generations}/"
+        f"{num_compared_generations}",
+        "("
+        f"{100.0 * num_changed_generations / max(num_compared_generations, 1):.2f}%"
+        ")",
+    )
+
+    print(
+        "Generated-token change rate after shuffle:",
+        100.0
+        * token_difference_sum
+        / max(token_difference_count, 1),
+        "%",
+    )
+
+    print(
+        "\n"
+        "=== END BERT LATENT -> TEXT DIAGNOSTIC ===\n"
+    )
+
+
+
 def first_pair_position_per_image(dataset_indices):
     """
     Return one pair-level position for every unique original image.
@@ -527,9 +1091,15 @@ parser.add_argument('--vitmae_cond_tokens_per_latent',type=int, default=4)
 parser.add_argument('--vitmae_adapter_heads',type=int,default=12)
 parser.add_argument('--vitmae_adapter_mlp_ratio',type=float,default=4.0)
 
-
-parser.add_argument("--text_decoder_arch",type=str,choices=["cnn", "bart"],default="cnn")
+parser.add_argument("--text_encoder_arch",type=str,choices=["cnn", "bert"],default="cnn")
+parser.add_argument("--text_decoder_arch",type=str,choices=["cnn", "bart", "bert"],default="cnn")
 parser.add_argument("--bart_model_name",type=str,default="facebook/bart-base")
+parser.add_argument("--bert_model_name",type=str,default="bert-base-uncased")
+
+parser.add_argument("--bert_lr",type=float,default=1e-5)
+parser.add_argument("--bert_memory_tokens_per_latent",type=int,default=4)
+parser.add_argument("--bert_max_length",type=int,default=64)
+
 parser.add_argument("--bart_lr",type=float,default=1e-5)
 parser.add_argument("--bart_memory_tokens_per_latent",type=int,default=4)
 parser.add_argument("--bart_max_length",type=int,default=64)
@@ -674,6 +1244,17 @@ parser.add_argument(
         "latent-usage diagnostics."
     ),
 )
+
+parser.add_argument(
+    "--enable_bert_latent_diagnostics",
+    action="store_true",
+    default=False,
+    help=(
+        "Run BERT latent-to-text and "
+        "caption-specific latent usage diagnostics."
+    ),
+)
+
 #enable_qualitative_visuals
 # Evaluation metrics
 parser.add_argument('--enable_test_epoch', action='store_true', default=False,
@@ -708,9 +1289,23 @@ args = parser.parse_args()
 
 image_encoder_arch = args.image_encoder_arch
 image_decoder_arch = args.image_decoder_arch
+text_encoder_arch = args.text_encoder_arch
 text_decoder_arch = args.text_decoder_arch
 
 rgb_decoder_mode = (args.image_decoder_arch == "vitmae")
+
+# For this first implementation BERT is a complete
+# text encoder+decoder branch.
+if (
+    args.text_encoder_arch == "bert"
+) != (
+    args.text_decoder_arch == "bert"
+):
+    parser.error(
+        "BERT currently has to be selected as both "
+        "--text_encoder_arch bert and "
+        "--text_decoder_arch bert."
+    )
 
 
 # ---------------------------------------------------------
@@ -846,6 +1441,7 @@ else:
         f"{args.note}_"
         f"IE{args.image_encoder_arch}_"
         f"ID{args.image_decoder_arch}_"
+        f"TE{args.text_encoder_arch}_"
         f"TD{args.text_decoder_arch}_"
         f"K{args.K}_B{args.batch_size}_"
         f"{args.priorposterior}_{args.likelihood}_"
@@ -877,6 +1473,8 @@ siglip_params = []
 vitmae_params = []
 other_params = []
 bart_params = []
+bert_params = []
+
 
 for name, p in model.named_parameters():
 
@@ -906,6 +1504,21 @@ for name, p in model.named_parameters():
     ):
         bart_params.append(p)
 
+
+    elif (
+            args.text_encoder_arch == "bert"
+            and "vaes.1.enc.backbone." in name
+    ):
+        # Pretrained BERT text encoder.
+        bert_params.append(p)
+
+    elif (
+            args.text_decoder_arch == "bert"
+            and "vaes.1.dec.mlm." in name
+    ):
+        # Pretrained BERT masked-LM decoder.
+        bert_params.append(p)
+
     else:
 
         # Includes:
@@ -919,6 +1532,13 @@ for name, p in model.named_parameters():
 
 
 param_groups = []
+
+if bert_params:
+
+    param_groups.append({
+        "params": bert_params,
+        "lr": args.bert_lr,
+    })
 
 if siglip_params:
 
@@ -1573,6 +2193,26 @@ def evaluate_img2text(epoch):
                     )
                 )
 
+            elif args.text_decoder_arch == "bert":
+
+                # No GT tokens are passed here.
+                px_txt = text_vae.decode_likelihood(
+                    latents_txt
+                )
+
+                # [1,B,L] -> [B,L]
+                generated_ids = (
+                    px_txt.mode
+                    .squeeze(0)
+                )
+
+                generated_texts = (
+                    text_vae.dec.decode_batch(
+                        generated_ids
+                    )
+                )
+
+
             else:
 
                 px_txt = text_vae.px_u(
@@ -1583,6 +2223,14 @@ def evaluate_img2text(epoch):
                     get_mean(px_txt)
                     .squeeze(0)
                     .cpu()
+                )
+
+            if args.text_decoder_arch == "bert":
+                # GT is decoded ONLY now, after generation.
+                reference_texts = (
+                    text_vae.dec.decode_batch(
+                        captions
+                    )
                 )
 
             captions_cpu = captions.cpu()
@@ -1604,12 +2252,26 @@ def evaluate_img2text(epoch):
                 # true global dataset index as key is safe.
                 key = f"image_{dataset_idx}"
 
-                reference_caption = decode_caption(
-                    captions_cpu[i]
-                )
+                if args.text_decoder_arch == "bert":
 
-                if args.text_decoder_arch == "bart":
-                    generated_caption = generated_texts[i].strip()
+                    reference_caption = (
+                        reference_texts[i].strip()
+                    )
+
+                else:
+
+                    reference_caption = decode_caption(
+                        captions_cpu[i]
+                    )
+
+                if args.text_decoder_arch in (
+                        "bart",
+                        "bert",
+                ):
+                    generated_caption = (
+                        generated_texts[i].strip()
+                    )
+
                 else:
                     generated_caption = decode_caption(
                         generated[i]
@@ -3986,10 +4648,10 @@ def evaluate_wz_ablation(
     # loader = test_cluster_loader
     # dataset = test_cluster_dataset
 
-
     output_dir = os.path.join(
         runPath,
-        "wz_ablation"
+        "wz_ablation",
+        args.test_time_dataset_state,
     )
 
     W = model.params.latent_dim_w
@@ -4020,18 +4682,23 @@ def evaluate_wz_ablation(
     # Decode generated text tensor -> string
     # ======================================================
     def generated_text_to_string(
-        generated_text,
+            generated_text,
     ):
         """
         CNN:
             generated_text: [L, custom_vocab_size]
 
-        BART:
-            generated_text: [L] token IDs
+        BART/BERT:
+            generated_text may already be a decoded string.
         """
 
-        if args.text_decoder_arch == "bart":
+        # BART/BERT decode_text() already returns strings.
+        if isinstance(generated_text, str):
+            return generated_text.strip()
 
+        # Optional compatibility if BART token IDs are ever
+        # passed directly to this helper.
+        if args.text_decoder_arch == "bart":
             token_ids = (
                 generated_text
                 .detach()
@@ -4051,9 +4718,7 @@ def evaluate_wz_ablation(
                 .strip()
             )
 
-        # --------------------------------------------------
-        # Legacy CNN text decoder
-        # --------------------------------------------------
+        # Legacy CNN
         indices = (
             torch.argmax(
                 generated_text,
@@ -4068,7 +4733,6 @@ def evaluate_wz_ablation(
 
             idx = int(idx)
 
-            # vocab loaded from JSON may have string keys
             if str(idx) in dataset.i2w:
                 token = dataset.i2w[str(idx)]
             else:
@@ -4083,28 +4747,20 @@ def evaluate_wz_ablation(
     # Decode latent (w,z) -> generated text
     # ======================================================
     def decode_text(
-        w,
-        z,
+            w,
+            z,
     ):
-        """
-        w: [1,B,W]
-        z: [1,B,Z]
-
-        CNN returns:
-            [B,L,vocab_size]
-
-        BART returns:
-            [B,L] token IDs
-        """
-
         u = torch.cat(
-            (w, z),
-            dim=-1
+            (
+                w,
+                z,
+            ),
+            dim=-1,
         )
 
-        # --------------------------------------------------
-        # BART: autoregressive generation, NO teacher forcing
-        # --------------------------------------------------
+        # ======================================================
+        # BART
+        # ======================================================
         if args.text_decoder_arch == "bart":
 
             generated_ids = text_vae.dec.generate(
@@ -4112,25 +4768,54 @@ def evaluate_wz_ablation(
                 max_new_tokens=args.bart_max_length,
             )
 
-            # [1,B,L] -> [B,L]
+            generated_ids = generated_ids.squeeze(0)
+
             return (
-                generated_ids
+                text_vae.dec.tokenizer.batch_decode(
+                    generated_ids,
+                    skip_special_tokens=True,
+                    clean_up_tokenization_spaces=False,
+                )
+            )
+
+        # ======================================================
+        # BERT
+        # ======================================================
+        elif args.text_decoder_arch == "bert":
+
+            # Latent-only decoding.
+            #
+            # No GT caption enters the decoder.
+            px_txt = text_vae.decode_likelihood(
+                u
+            )
+
+            # [1,B,L] -> [B,L]
+            generated_ids = (
+                px_txt.mode
+                .squeeze(0)
+            )
+
+            return (
+                text_vae.dec.decode_batch(
+                    generated_ids
+                )
+            )
+
+        # ======================================================
+        # Legacy CNN
+        # ======================================================
+        else:
+
+            px_txt = text_vae.px_u(
+                *text_vae.dec(u)
+            )
+
+            return (
+                get_mean(px_txt)
                 .squeeze(0)
                 .cpu()
             )
-
-        # --------------------------------------------------
-        # Legacy CNN decoder
-        # --------------------------------------------------
-        px_txt = text_vae.px_u(
-            *text_vae.dec(u)
-        )
-
-        return (
-            utils.get_mean(px_txt)
-            .squeeze(0)
-            .cpu()
-        )
 
     counter = 1
 
@@ -4381,6 +5066,15 @@ if __name__ == '__main__':
 
         for epoch in range(start_epoch, args.epochs + 1):
             train(epoch)
+
+            if (
+                    args.enable_bert_latent_diagnostics
+                    and args.text_decoder_arch == "bert"
+            ):
+                diagnose_bert_latent_to_text(
+                    max_batches=10,
+                    num_examples=8,
+                )
 
             model_checkpoint_path = os.path.join(runPath, f'model_{epoch}.rar')
             optimizer_checkpoint_path = os.path.join(runPath, f'optimizer_{epoch}.rar')

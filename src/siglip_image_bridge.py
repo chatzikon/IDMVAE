@@ -167,6 +167,16 @@ def get_reconstruction_targets(model,x):
         targets[1] = x[2]
 
 
+    elif text_decoder_arch == "bert":
+
+        # x[1] is both:
+        #
+        #   - the BERT text-encoder input
+        #   - the reconstruction TARGET
+        #
+        # It is NOT passed into the BERT decoder itself.
+        targets[1] = x[1]
+
     else:
 
         raise ValueError(

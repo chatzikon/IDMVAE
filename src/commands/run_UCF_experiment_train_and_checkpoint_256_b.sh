@@ -39,7 +39,7 @@ fi
 # Model hyperparameters (Appendix C.2: 50 epochs; λ1=40, λ2=10, diffusion 0.1)
 BATCH=16
 K=1
-EPOCHS=5
+EPOCHS=20
 SEED=2
 NUM_WORKERS=4
 
@@ -52,7 +52,8 @@ diff_lw=0.1
 diff_sg="OFF"
 
 CROSS_L_SC=40.0
-GEN_AUG_L_SC=10.0
+#GEN_AUG_L_SC=10.0
+GEN_AUG_L_SC=0.0
 Z_L_SC=0
 gen_aug_scheme="posterior"
 GEN_AUG_TYPE="CL"
@@ -176,17 +177,19 @@ CMD_ARGS_BASE=(
   #"--use_pretrain_feats"
   "--image_encoder_arch" "siglip"
   "--image_decoder_arch" "vitmae"
-  "--text_decoder_arch" "bart"
+  "--text_encoder_arch" "bert"
+  "--text_decoder_arch" "bert"
   "--amp"
   "--bart_token_dropout" "0.5"
+  "--enable_bert_latent_diagnostics"
   #"--resume"
   #"--resume_from_CPt_runId"
-  #"--CPt_runId" "UCF_release_11_20_19/checkpoints/09-02_0_gpu0_ltCL_TD_lw0.1_K1_B256_Normal_Laplace_b1.0_10.0_40.0_256_256_s2"
+  #"--CPt_runId" "UCF_release_12_46_59/checkpoints/Dev/Dev_09-16_0_gpu0_ltCL_TD_lw0.1_K1_B16_Normal_Laplace_b1.0_0.0_40.0_0.0256_256_s2"
   "--test-only"
   #"--enable_img2text"
   #"--img2text_use_diffusion_prior"
   #"--enable_text2text_mean"
-  "--checkpoint-path" "/home/chatziko/PycharmProjects/PythonProject/IDMVAE/outputs/UCF_release_14_47_51/checkpoints/09-15_0_gpu0_ltCL_TD_lw0.1_IEsiglip_IDvitmae_TDbart_K1_B16_Normal_Laplace_b1.0_10.0_40.0_0.0_256_256_s2/model_5.rar"
+  "--checkpoint-path" "/home/chatziko/PycharmProjects/PythonProject/IDMVAE/outputs/UCF_release_14_42_21/checkpoints/09-16_0_gpu0_ltCL_TD_lw0.1_IEsiglip_IDvitmae_TEbert_TDbert_K1_B16_Normal_Laplace_b1.0_0.0_40.0_0.0_256_256_s2/model_10.rar"
 )
 
 if [ -n "${diff_stop_grad}" ]; then
