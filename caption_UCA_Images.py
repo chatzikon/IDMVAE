@@ -91,16 +91,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--data-root",
         type=Path,
-        default=Path("/home/chatziko/PycharmProjects/PythonProject/IDMVAE/UCA_image_dataset"),
+        default=Path("/home/chatziko/PycharmProjects/PythonProject/IDMVAE/archive/UCA_image_dataset"),
         help="Root containing train/, validation/, and test/.",
     )
     parser.add_argument(
-        "--mode", choices=["caption", "verify"], default="caption"
+        "--mode", choices=["caption", "verify"], default="verify"
     )
     parser.add_argument(
         "--model",
         type=str,
         default="Qwen/Qwen2.5-VL-3B-Instruct",
+        #default="google/paligemma2-3b-mix-448",
         help="Hugging Face VLM checkpoint.",
     )
     parser.add_argument(
@@ -307,10 +308,19 @@ def build_chat_text(processor, prompt: str) -> str:
             ],
         }
     ]
-    if hasattr(processor, "apply_chat_template"):
+
+    # Use chat template only if the processor actually provides one.
+    if (
+        hasattr(processor, "apply_chat_template")
+        and getattr(processor, "chat_template", None)
+    ):
         return processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
         )
+
+    # PaliGemma does not require a chat template.
     return prompt
 
 

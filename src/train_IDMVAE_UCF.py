@@ -65,6 +65,7 @@ from collections import defaultdict
 import numpy as np
 import torch
 from torch import optim
+import torch.nn.functional as F
 from torchvision.utils import make_grid
 import models
 from utils import CrossModalEvalForwardMode
@@ -464,51 +465,31 @@ def diagnose_bart_latent_usage(
     )
 
 @torch.inference_mode()
-def diagnose_bert_latent_to_text(
-    max_batches=5,
+def diagnose_bert_full_split(
+    epoch,
+    loader,
+    split_name,
+    max_batches=20,
     num_examples=8,
 ):
-    """
-    Verify the non-autoregressive BERT latent->text pathway.
-
-    Checks:
-        1. posterior statistics
-        2. latent-only reconstruction
-        3. shuffled-latent reconstruction
-        4. correct-vs-shuffled NLL
-        5. prior generation
-
-    IMPORTANT:
-        Ground-truth caption IDs are NEVER supplied to the BERT
-        decoder as decoder input.
-
-        They are used only:
-            - by the BERT encoder
-            - afterward as targets for log_prob()
-            - afterward for human-readable reference printing
-    """
-
     if getattr(
         model.params,
         "text_decoder_arch",
         "cnn",
     ) != "bert":
-
-        print(
-            "Skipping BERT latent diagnostic: "
-            "text decoder is not BERT."
-        )
-        return
+        print("Skipping full BERT diagnostic: decoder is not BERT.")
+        return None
 
     print(
         "\n"
-        "=========================================\n"
-        "=== BERT LATENT -> TEXT DIAGNOSTIC =====\n"
-        "========================================="
+        "====================================================\n"
+        f"BERT FULL DIAGNOSTIC | split={split_name}\n"
+        "===================================================="
     )
 
     model.eval()
 
+    img_vae = model.vaes[0]
     text_vae = model.vaes[1]
 
     W = model.params.latent_dim_w
@@ -517,35 +498,105 @@ def diagnose_bert_latent_to_text(
     pad_id = text_vae.dec.pad_token_id
 
     # ---------------------------------------------------------
-    # Aggregate posterior statistics
+    # Posterior statistics
     # ---------------------------------------------------------
 
-    all_w_means = []
-    all_z_means = []
+    posterior = {
+        "w_txt_mean": [],
+        "w_txt_scale": [],
+        "z_txt_mean": [],
+        "z_txt_scale": [],
+        "w_img_mean": [],
+        "w_img_scale": [],
+        "z_img_mean": [],
+        "z_img_scale": [],
+    }
 
-    all_w_scales = []
-    all_z_scales = []
+    # ---------------------------------------------------------
+    # Decoder conditions
+    #
+    # D = correct text posterior
+    #
+    # shuffle_*:
+    #   tests whether decoder actually uses w/z.
+    #
+    # A/B/C/D:
+    #   directly quantify your existing generation ablation.
+    # ---------------------------------------------------------
 
-    nll_correct_sum = 0.0
-    nll_shuffled_sum = 0.0
-    token_count = 0
+    condition_names = [
+        "D_ztxt_wtxt",
+        "D_shuffle_z",
+        "D_shuffle_w",
+        "D_shuffle_both",
+        "C_zimg_wtxt",
+        "B_ztxt_wprior",
+        "A_zimg_wprior",
+    ]
 
-    generated_correct_all = []
-    generated_shuffled_all = []
+    metrics = {
+        name: {
+            "nll_sum": 0.0,
+            "token_correct": 0,
+            "token_total": 0,
+            "sequence_correct": 0,
+            "sequence_total": 0,
+            "top1_conf_sum": 0.0,
+            "repeat_count": 0,
+            "repeat_total": 0,
+            "changed_tokens_from_D": 0,
+            "changed_sequences_from_D": 0,
+        }
+        for name in condition_names
+    }
 
-    num_changed_generations = 0
-    num_compared_generations = 0
+    # ---------------------------------------------------------
+    # KL diagnostics
+    # ---------------------------------------------------------
 
-    examples_printed = 0
+    kl_sums = {
+        "w_txt": 0.0,
+        "z_txt": 0.0,
+        "w_img": 0.0,
+        "z_img": 0.0,
+    }
 
-    token_difference_sum = 0
-    token_difference_count = 0
+    kl_samples = 0
 
-    for batch_idx, dataT in enumerate(
-        test_time_loader
-    ):
+    # ---------------------------------------------------------
+    # Shared-z alignment
+    # ---------------------------------------------------------
 
-        if batch_idx >= max_batches:
+    alignment = {
+        "paired_cos_sum": 0.0,
+        "shuffled_cos_sum": 0.0,
+        "paired_mse_sum": 0.0,
+        "shuffled_mse_sum": 0.0,
+        "paired_distribution_alignment_sum": 0.0,
+        "shuffled_distribution_alignment_sum": 0.0,
+        "samples": 0,
+    }
+
+    examples = []
+
+    p_w_txt = model.get_simple_prior_w(
+        view=1,
+        aux=False,
+    )
+
+    p_w_img = model.get_simple_prior_w(
+        view=0,
+        aux=False,
+    )
+
+    p_z = model.get_simple_prior_z()
+
+    for batch_idx, dataT in enumerate(loader):
+
+        if (
+            max_batches is not None
+            and batch_idx >= max_batches
+        ):
             break
 
         data, _ = unpack_data_CUBcluster8(
@@ -553,135 +604,107 @@ def diagnose_bert_latent_to_text(
             device=device,
         )
 
-        # =====================================================
-        # BERT text modality
-        #
-        # captions:
-        #     [B,L] integer BERT token IDs
-        # =====================================================
-
+        images = data[0]
         captions = data[1]
 
         B = captions.size(0)
 
-        # -----------------------------------------------------
-        # 1. Encode caption
-        # -----------------------------------------------------
+        # =====================================================
+        # 1. IMAGE POSTERIOR
+        # =====================================================
 
-        qu_params = text_vae.enc(
-            captions
+        img_params = img_vae.enc(images)
+
+        q_img = img_vae.qu_x(
+            *img_params
         )
 
-        qu_text = text_vae.qu_x(
-            *qu_params
-        )
+        mu_img = q_img.mean
+        scale_img = q_img.scale
 
-        mean = qu_text.mean
-        scale = qu_text.scale
-
-        w_mean, z_mean = torch.split(
-            mean,
+        w_img_mu, z_img_mu = torch.split(
+            mu_img,
             [W, Z],
             dim=-1,
         )
 
-        w_scale, z_scale = torch.split(
-            scale,
+        w_img_scale, z_img_scale = torch.split(
+            scale_img,
             [W, Z],
             dim=-1,
         )
 
-        all_w_means.append(
-            w_mean.cpu()
+        # =====================================================
+        # 2. TEXT POSTERIOR
+        # =====================================================
+
+        txt_params = text_vae.enc(captions)
+
+        q_txt = text_vae.qu_x(
+            *txt_params
         )
 
-        all_z_means.append(
-            z_mean.cpu()
+        mu_txt = q_txt.mean
+        scale_txt = q_txt.scale
+
+        w_txt_mu, z_txt_mu = torch.split(
+            mu_txt,
+            [W, Z],
+            dim=-1,
         )
 
-        all_w_scales.append(
-            w_scale.cpu()
+        w_txt_scale, z_txt_scale = torch.split(
+            scale_txt,
+            [W, Z],
+            dim=-1,
         )
 
-        all_z_scales.append(
-            z_scale.cpu()
+        # -----------------------------------------------------
+        # Save posterior statistics
+        # -----------------------------------------------------
+
+        posterior["w_txt_mean"].append(
+            w_txt_mu.cpu()
+        )
+
+        posterior["w_txt_scale"].append(
+            w_txt_scale.cpu()
+        )
+
+        posterior["z_txt_mean"].append(
+            z_txt_mu.cpu()
+        )
+
+        posterior["z_txt_scale"].append(
+            z_txt_scale.cpu()
+        )
+
+        posterior["w_img_mean"].append(
+            w_img_mu.cpu()
+        )
+
+        posterior["w_img_scale"].append(
+            w_img_scale.cpu()
+        )
+
+        posterior["z_img_mean"].append(
+            z_img_mu.cpu()
+        )
+
+        posterior["z_img_scale"].append(
+            z_img_scale.cpu()
         )
 
         # =====================================================
-        # 2. Correct posterior mean
+        # 3. DETERMINISTIC SHUFFLE
         # =====================================================
 
-        # [B,W+Z] -> [1,B,W+Z]
-        u_correct = (
-            mean.unsqueeze(0)
-        )
-
-        # NO GT supplied to decoder.
-        px_correct = (
-            text_vae.decode_likelihood(
-                u_correct
-            )
-        )
-
-        # [1,B,L]
-        ids_correct = (
-            px_correct.mode
-            .squeeze(0)
-        )
-
-        if batch_idx == 0:
-            print(
-                "\n=== BERT SHAPE CHECK ==="
-            )
-
-            print(
-                "caption IDs:",
-                captions.shape,
-                captions.dtype,
-            )
-
-            print(
-                "posterior mean:",
-                mean.shape,
-            )
-
-            print(
-                "posterior scale:",
-                scale.shape,
-            )
-
-            print(
-                "latent u:",
-                u_correct.shape,
-            )
-
-            print(
-                "decoder logits:",
-                px_correct.logits.shape,
-            )
-
-            print(
-                "generated IDs:",
-                ids_correct.shape,
-            )
-
-            print(
-                "=== END SHAPE CHECK ===\n"
-            )
-
-
-
-        # =====================================================
-        # 3. Shuffled posterior mean
-        # =====================================================
-
-        # Deterministic non-identity shuffle.
         if B > 1:
 
             perm = torch.roll(
                 torch.arange(
                     B,
-                    device=mean.device,
+                    device=device,
                 ),
                 shifts=1,
             )
@@ -690,341 +713,1256 @@ def diagnose_bert_latent_to_text(
 
             perm = torch.arange(
                 B,
-                device=mean.device,
+                device=device,
             )
 
-        u_shuffled = (
-            u_correct[:, perm]
+        w_txt_shuf = w_txt_mu[perm]
+        z_txt_shuf = z_txt_mu[perm]
+
+        z_txt_scale_shuf = (
+            z_txt_scale[perm]
         )
 
-        # Again: latent only.
-        px_shuffled = (
-            text_vae.decode_likelihood(
-                u_shuffled
-            )
-        )
+        # =====================================================
+        # 4. TEXT PRIOR w
+        # =====================================================
 
-        ids_shuffled = (
-            px_shuffled.mode
-            .squeeze(0)
-        )
+        # Same w_prior is used by A and B.
+        w_prior = p_w_txt.rsample(
+            torch.Size([1, B])
+        ).squeeze(2)
 
-        changed = (
-                ids_correct
-                != ids_shuffled
-        ).any(dim=-1)
+        # =====================================================
+        # 5. LATENT CONDITIONS
+        # =====================================================
 
-        num_changed_generations += (
-            changed.sum().item()
-        )
+        conditions = {
+            # Full correct text posterior.
+            "D_ztxt_wtxt":
+                torch.cat(
+                    (
+                        w_txt_mu.unsqueeze(0),
+                        z_txt_mu.unsqueeze(0),
+                    ),
+                    dim=-1,
+                ),
 
-        num_compared_generations += B
+            # Keep w correct; destroy z/sample relationship.
+            "D_shuffle_z":
+                torch.cat(
+                    (
+                        w_txt_mu.unsqueeze(0),
+                        z_txt_shuf.unsqueeze(0),
+                    ),
+                    dim=-1,
+                ),
+
+            # Keep z correct; destroy w/sample relationship.
+            "D_shuffle_w":
+                torch.cat(
+                    (
+                        w_txt_shuf.unsqueeze(0),
+                        z_txt_mu.unsqueeze(0),
+                    ),
+                    dim=-1,
+                ),
+
+            # Destroy both.
+            "D_shuffle_both":
+                torch.cat(
+                    (
+                        w_txt_shuf.unsqueeze(0),
+                        z_txt_shuf.unsqueeze(0),
+                    ),
+                    dim=-1,
+                ),
+
+            # C:
+            # image shared z + correct text-private w.
+            "C_zimg_wtxt":
+                torch.cat(
+                    (
+                        w_txt_mu.unsqueeze(0),
+                        z_img_mu.unsqueeze(0),
+                    ),
+                    dim=-1,
+                ),
+
+            # B:
+            # text shared z + prior text w.
+            "B_ztxt_wprior":
+                torch.cat(
+                    (
+                        w_prior,
+                        z_txt_mu.unsqueeze(0),
+                    ),
+                    dim=-1,
+                ),
+
+            # A:
+            # image shared z + SAME prior w.
+            "A_zimg_wprior":
+                torch.cat(
+                    (
+                        w_prior,
+                        z_img_mu.unsqueeze(0),
+                    ),
+                    dim=-1,
+                ),
+        }
 
         valid = (
-                captions
-                != pad_id
+            captions != pad_id
         )
 
-        token_different = (
-                ids_correct
-                != ids_shuffled
-        )
-
-        token_difference_sum += (
-                token_different
-                & valid
-        ).sum().item()
-
-        token_difference_count += (
+        valid_count = int(
             valid.sum().item()
         )
 
+        modes = {}
+
         # =====================================================
-        # 4. Likelihood diagnostic
-        #
-        # GT enters ONLY HERE as the reconstruction target.
+        # 6. NLL / ACCURACY / CONFIDENCE / REPETITION
         # =====================================================
 
-        logp_correct = (
-            px_correct.log_prob(
+        for name, latent in conditions.items():
+
+            px = text_vae.decode_likelihood(
+                latent
+            )
+
+            logp = px.log_prob(
                 captions
             )
-        )
 
-        logp_shuffled = (
-            px_shuffled.log_prob(
-                captions
+            pred = (
+                px.mode
+                .squeeze(0)
             )
-        )
 
-        nll_correct_sum += (
-            -logp_correct.sum().item()
-        )
+            modes[name] = pred
 
-        nll_shuffled_sum += (
-            -logp_shuffled.sum().item()
-        )
+            # -------------------------------
+            # NLL
+            # -------------------------------
 
-        token_count += (
-            captions != pad_id
-        ).sum().item()
+            metrics[name]["nll_sum"] += (
+                -logp.sum().item()
+            )
+
+            metrics[name]["token_total"] += (
+                valid_count
+            )
+
+            # -------------------------------
+            # Token accuracy
+            # -------------------------------
+
+            metrics[name]["token_correct"] += (
+                (
+                    (pred == captions)
+                    & valid
+                )
+                .sum()
+                .item()
+            )
+
+            # -------------------------------
+            # Exact sequence accuracy
+            # -------------------------------
+
+            seq_correct = (
+                (
+                    (pred == captions)
+                    | (~valid)
+                )
+                .all(dim=-1)
+            )
+
+            metrics[name]["sequence_correct"] += (
+                seq_correct.sum().item()
+            )
+
+            metrics[name]["sequence_total"] += B
+
+            # -------------------------------
+            # Decoder confidence
+            #
+            # No full softmax tensor retained.
+            # -------------------------------
+
+            logits = (
+                px.logits
+                .squeeze(0)
+            )
+
+            max_logits = (
+                logits
+                .max(dim=-1)
+                .values
+            )
+
+            log_z = torch.logsumexp(
+                logits,
+                dim=-1,
+            )
+
+            top1_conf = torch.exp(
+                max_logits - log_z
+            )
+
+            metrics[name]["top1_conf_sum"] += (
+                top1_conf[valid]
+                .sum()
+                .item()
+            )
+
+            # -------------------------------
+            # Immediate token repetition
+            #
+            # This directly catches:
+            # "a a a", "with with", etc.
+            # -------------------------------
+
+            adjacent_valid = (
+                valid[:, :-1]
+                & valid[:, 1:]
+            )
+
+            adjacent_repeat = (
+                pred[:, :-1]
+                == pred[:, 1:]
+            )
+
+            metrics[name]["repeat_count"] += (
+                (
+                    adjacent_repeat
+                    & adjacent_valid
+                )
+                .sum()
+                .item()
+            )
+
+            metrics[name]["repeat_total"] += (
+                adjacent_valid
+                .sum()
+                .item()
+            )
 
         # =====================================================
-        # 5. Decode strings
+        # 7. CHANGE RELATIVE TO CORRECT D
         # =====================================================
 
-        refs = (
-            text_vae.dec.decode_batch(
-                captions
+        pred_D = modes[
+            "D_ztxt_wtxt"
+        ]
+
+        for name, pred in modes.items():
+
+            changed_tokens = (
+                (pred != pred_D)
+                & valid
             )
-        )
 
-        generated_correct = (
-            text_vae.dec.decode_batch(
-                ids_correct
+            metrics[name][
+                "changed_tokens_from_D"
+            ] += changed_tokens.sum().item()
+
+            changed_seq = (
+                changed_tokens
+                .any(dim=-1)
             )
-        )
 
-        generated_shuffled = (
-            text_vae.dec.decode_batch(
-                ids_shuffled
-            )
-        )
-
-        generated_correct_all.extend(
-            generated_correct
-        )
-
-        generated_shuffled_all.extend(
-            generated_shuffled
-        )
+            metrics[name][
+                "changed_sequences_from_D"
+            ] += changed_seq.sum().item()
 
         # =====================================================
-        # 6. Print a few examples
+        # 8. SEPARATE KL(w), KL(z)
         # =====================================================
 
-        for i in range(B):
+        qw_txt = text_vae.qu_x(
+            w_txt_mu,
+            w_txt_scale,
+        )
 
-            if examples_printed >= num_examples:
-                break
+        qz_txt = text_vae.qu_x(
+            z_txt_mu,
+            z_txt_scale,
+        )
 
-            source_i = int(
-                perm[i].item()
+        qw_img = img_vae.qu_x(
+            w_img_mu,
+            w_img_scale,
+        )
+
+        qz_img = img_vae.qu_x(
+            z_img_mu,
+            z_img_scale,
+        )
+
+        kl_sums["w_txt"] += (
+            torch.distributions.kl_divergence(
+                qw_txt,
+                p_w_txt,
             )
-
-            print(
-                "\n-----------------------------------------"
-            )
-
-            print(
-                f"Example {examples_printed + 1}"
-            )
-
-            print(
-                "GT:"
-            )
-
-            print(
-                "   ",
-                refs[i],
-            )
-
-            print(
-                "\nCorrect latent reconstruction:"
-            )
-
-            print(
-                "   ",
-                generated_correct[i],
-            )
-
-            print(
-                "\nShuffled latent reconstruction:"
-            )
-
-            print(
-                "   ",
-                generated_shuffled[i],
-            )
-
-            print(
-                f"\nShuffled latent came from "
-                f"batch sample {source_i}"
-            )
-
-            examples_printed += 1
-
-    # =========================================================
-    # Aggregate statistics
-    # =========================================================
-
-    w_means = torch.cat(
-        all_w_means,
-        dim=0,
-    )
-
-    z_means = torch.cat(
-        all_z_means,
-        dim=0,
-    )
-
-    w_scales = torch.cat(
-        all_w_scales,
-        dim=0,
-    )
-
-    z_scales = torch.cat(
-        all_z_scales,
-        dim=0,
-    )
-
-    def between_sample_std(x):
-
-        return (
-            x.std(
-                dim=0,
-                unbiased=False,
-            )
-            .mean()
+            .sum(dim=-1)
+            .sum()
             .item()
         )
 
-    nll_correct = (
-        nll_correct_sum
-        / max(token_count, 1)
+        kl_sums["z_txt"] += (
+            torch.distributions.kl_divergence(
+                qz_txt,
+                p_z,
+            )
+            .sum(dim=-1)
+            .sum()
+            .item()
+        )
+
+        kl_sums["w_img"] += (
+            torch.distributions.kl_divergence(
+                qw_img,
+                p_w_img,
+            )
+            .sum(dim=-1)
+            .sum()
+            .item()
+        )
+
+        kl_sums["z_img"] += (
+            torch.distributions.kl_divergence(
+                qz_img,
+                p_z,
+            )
+            .sum(dim=-1)
+            .sum()
+            .item()
+        )
+
+        kl_samples += B
+
+        # =====================================================
+        # 9. z_img <-> z_txt ALIGNMENT
+        # =====================================================
+
+        paired_cos = F.cosine_similarity(
+            z_img_mu,
+            z_txt_mu,
+            dim=-1,
+        )
+
+        shuffled_cos = F.cosine_similarity(
+            z_img_mu,
+            z_txt_shuf,
+            dim=-1,
+        )
+
+        paired_mse = (
+            (z_img_mu - z_txt_mu)
+            .pow(2)
+            .mean(dim=-1)
+        )
+
+        shuffled_mse = (
+            (z_img_mu - z_txt_shuf)
+            .pow(2)
+            .mean(dim=-1)
+        )
+
+        # Same form as your current z-alignment training loss:
+        # mean and scale alignment.
+        paired_dist_alignment = (
+            (
+                z_img_mu - z_txt_mu
+            ).pow(2)
+            +
+            (
+                z_img_scale
+                - z_txt_scale
+            ).pow(2)
+        ).mean(dim=-1)
+
+        shuffled_dist_alignment = (
+            (
+                z_img_mu - z_txt_shuf
+            ).pow(2)
+            +
+            (
+                z_img_scale
+                - z_txt_scale_shuf
+            ).pow(2)
+        ).mean(dim=-1)
+
+        alignment["paired_cos_sum"] += (
+            paired_cos.sum().item()
+        )
+
+        alignment["shuffled_cos_sum"] += (
+            shuffled_cos.sum().item()
+        )
+
+        alignment["paired_mse_sum"] += (
+            paired_mse.sum().item()
+        )
+
+        alignment["shuffled_mse_sum"] += (
+            shuffled_mse.sum().item()
+        )
+
+        alignment[
+            "paired_distribution_alignment_sum"
+        ] += (
+            paired_dist_alignment
+            .sum()
+            .item()
+        )
+
+        alignment[
+            "shuffled_distribution_alignment_sum"
+        ] += (
+            shuffled_dist_alignment
+            .sum()
+            .item()
+        )
+
+        alignment["samples"] += B
+
+        # =====================================================
+        # 10. HUMAN-READABLE EXAMPLES
+        # =====================================================
+
+        if len(examples) < num_examples:
+
+            refs = text_vae.dec.decode_batch(
+                captions
+            )
+
+            decoded = {
+                name:
+                    text_vae.dec.decode_batch(pred)
+                for name, pred
+                in modes.items()
+            }
+
+            for i in range(B):
+
+                if len(examples) >= num_examples:
+                    break
+
+                examples.append({
+                    "reference":
+                        refs[i],
+
+                    "D_correct":
+                        decoded[
+                            "D_ztxt_wtxt"
+                        ][i],
+
+                    "shuffle_z":
+                        decoded[
+                            "D_shuffle_z"
+                        ][i],
+
+                    "shuffle_w":
+                        decoded[
+                            "D_shuffle_w"
+                        ][i],
+
+                    "shuffle_both":
+                        decoded[
+                            "D_shuffle_both"
+                        ][i],
+
+                    "C_zimg_wtxt":
+                        decoded[
+                            "C_zimg_wtxt"
+                        ][i],
+
+                    "B_ztxt_wprior":
+                        decoded[
+                            "B_ztxt_wprior"
+                        ][i],
+
+                    "A_zimg_wprior":
+                        decoded[
+                            "A_zimg_wprior"
+                        ][i],
+                })
+
+    # =========================================================
+    # AGGREGATION
+    # =========================================================
+
+    def latent_stats(
+        mean_key,
+        scale_key,
+    ):
+        means = torch.cat(
+            posterior[mean_key],
+            dim=0,
+        )
+
+        scales = torch.cat(
+            posterior[scale_key],
+            dim=0,
+        )
+
+        return {
+            "abs_mean":
+                means.abs().mean().item(),
+
+            "between_sample_std":
+                means.std(
+                    dim=0,
+                    unbiased=False,
+                ).mean().item(),
+
+            "scale_mean":
+                scales.mean().item(),
+
+            "scale_between_sample_std":
+                scales.std(
+                    dim=0,
+                    unbiased=False,
+                ).mean().item(),
+        }
+
+    condition_results = {}
+
+    for name, m in metrics.items():
+
+        token_total = max(
+            m["token_total"],
+            1,
+        )
+
+        seq_total = max(
+            m["sequence_total"],
+            1,
+        )
+
+        condition_results[name] = {
+            "nll_per_token":
+                m["nll_sum"]
+                / token_total,
+
+            "token_accuracy":
+                m["token_correct"]
+                / token_total,
+
+            "exact_sequence_accuracy":
+                m["sequence_correct"]
+                / seq_total,
+
+            "mean_top1_confidence":
+                m["top1_conf_sum"]
+                / token_total,
+
+            "adjacent_repeat_rate":
+                m["repeat_count"]
+                / max(
+                    m["repeat_total"],
+                    1,
+                ),
+
+            "token_change_from_D":
+                m["changed_tokens_from_D"]
+                / token_total,
+
+            "sequence_change_from_D":
+                m["changed_sequences_from_D"]
+                / seq_total,
+        }
+
+    D = condition_results[
+        "D_ztxt_wtxt"
+    ]
+
+    results = {
+        "epoch": epoch,
+        "split": split_name,
+
+        "posterior": {
+            "w_txt":
+                latent_stats(
+                    "w_txt_mean",
+                    "w_txt_scale",
+                ),
+
+            "z_txt":
+                latent_stats(
+                    "z_txt_mean",
+                    "z_txt_scale",
+                ),
+
+            "w_img":
+                latent_stats(
+                    "w_img_mean",
+                    "w_img_scale",
+                ),
+
+            "z_img":
+                latent_stats(
+                    "z_img_mean",
+                    "z_img_scale",
+                ),
+        },
+
+        "kl_per_sample": {
+            key:
+                value
+                / max(kl_samples, 1)
+
+            for key, value
+            in kl_sums.items()
+        },
+
+        "alignment": {
+            "paired_cosine":
+                alignment["paired_cos_sum"]
+                / max(
+                    alignment["samples"],
+                    1,
+                ),
+
+            "shuffled_cosine":
+                alignment["shuffled_cos_sum"]
+                / max(
+                    alignment["samples"],
+                    1,
+                ),
+
+            "paired_mse":
+                alignment["paired_mse_sum"]
+                / max(
+                    alignment["samples"],
+                    1,
+                ),
+
+            "shuffled_mse":
+                alignment["shuffled_mse_sum"]
+                / max(
+                    alignment["samples"],
+                    1,
+                ),
+
+            "paired_distribution_alignment":
+                alignment[
+                    "paired_distribution_alignment_sum"
+                ]
+                / max(
+                    alignment["samples"],
+                    1,
+                ),
+
+            "shuffled_distribution_alignment":
+                alignment[
+                    "shuffled_distribution_alignment_sum"
+                ]
+                / max(
+                    alignment["samples"],
+                    1,
+                ),
+        },
+
+        "conditions":
+            condition_results,
+
+        "deltas": {
+            # Does decoder use z?
+            "shuffle_z_nll_increase":
+                condition_results[
+                    "D_shuffle_z"
+                ]["nll_per_token"]
+                - D["nll_per_token"],
+
+            # Does decoder use w?
+            "shuffle_w_nll_increase":
+                condition_results[
+                    "D_shuffle_w"
+                ]["nll_per_token"]
+                - D["nll_per_token"],
+
+            "shuffle_both_nll_increase":
+                condition_results[
+                    "D_shuffle_both"
+                ]["nll_per_token"]
+                - D["nll_per_token"],
+
+            # z_img vs z_txt with SAME w_txt.
+            "zimg_vs_ztxt_with_wtxt":
+                condition_results[
+                    "C_zimg_wtxt"
+                ]["nll_per_token"]
+                - D["nll_per_token"],
+
+            # z_img vs z_txt with SAME prior w.
+            "zimg_vs_ztxt_with_wprior":
+                condition_results[
+                    "A_zimg_wprior"
+                ]["nll_per_token"]
+                - condition_results[
+                    "B_ztxt_wprior"
+                ]["nll_per_token"],
+        },
+
+        "examples":
+            examples,
+    }
+
+    # =========================================================
+    # PRINT IMPORTANT RESULTS
+    # =========================================================
+
+    print("\n--- LATENT USE ---")
+
+    print(
+        "D correct NLL:",
+        D["nll_per_token"],
     )
 
-    nll_shuffled = (
-        nll_shuffled_sum
-        / max(token_count, 1)
+    print(
+        "Shuffle z delta:",
+        results["deltas"][
+            "shuffle_z_nll_increase"
+        ],
+    )
+
+    print(
+        "Shuffle w delta:",
+        results["deltas"][
+            "shuffle_w_nll_increase"
+        ],
+    )
+
+    print(
+        "Shuffle both delta:",
+        results["deltas"][
+            "shuffle_both_nll_increase"
+        ],
+    )
+
+    print("\n--- CROSS-MODAL z ---")
+
+    print(
+        "C(z_img,w_txt) - D(z_txt,w_txt):",
+        results["deltas"][
+            "zimg_vs_ztxt_with_wtxt"
+        ],
+    )
+
+    print(
+        "A(z_img,w_prior) - B(z_txt,w_prior):",
+        results["deltas"][
+            "zimg_vs_ztxt_with_wprior"
+        ],
+    )
+
+    print("\n--- KL ---")
+
+    print(
+        json.dumps(
+            results["kl_per_sample"],
+            indent=4,
+        )
+    )
+
+    print("\n--- z ALIGNMENT ---")
+
+    print(
+        json.dumps(
+            results["alignment"],
+            indent=4,
+        )
+    )
+
+    print("\n--- DECODER HEALTH ---")
+
+    for name in [
+        "D_ztxt_wtxt",
+        "C_zimg_wtxt",
+    ]:
+
+        r = condition_results[name]
+
+        print(
+            name,
+            "| token acc:",
+            r["token_accuracy"],
+            "| repeat:",
+            r["adjacent_repeat_rate"],
+            "| confidence:",
+            r["mean_top1_confidence"],
+        )
+
+    print("\n--- EXAMPLES ---")
+
+    for i, example in enumerate(examples):
+
+        print(
+            f"\nExample {i + 1}"
+        )
+
+        for key, value in example.items():
+
+            print(
+                f"{key}: {value}"
+            )
+
+    # =========================================================
+    # SAVE
+    # =========================================================
+
+    output_dir = os.path.join(
+        runPath,
+        "bert_full_diagnostics",
+    )
+
+    os.makedirs(
+        output_dir,
+        exist_ok=True,
+    )
+
+    output_path = os.path.join(
+        output_dir,
+        (
+            f"diagnostics_{split_name}_"
+            f"epoch{epoch}.json"
+        ),
+    )
+
+    with open(
+        output_path,
+        "w",
+        encoding="utf-8",
+    ) as f:
+
+        json.dump(
+            results,
+            f,
+            indent=4,
+            ensure_ascii=False,
+        )
+
+    print(
+        f"\nSaved BERT diagnostic: {output_path}"
+    )
+
+    return results
+
+
+def diagnose_bert_tiny_overfit(
+    epoch,
+    num_samples=64,
+    steps=300,
+    lr=1e-4,
+):
+    """
+    Test whether the BERT decoder can memorize a tiny set when
+    conditioned on the corresponding q(w_txt,z_txt) posterior means.
+
+    Encoder is frozen.
+    Decoder is temporarily optimized.
+    Original decoder weights are restored afterward.
+    """
+
+    if getattr(
+        model.params,
+        "text_decoder_arch",
+        "cnn",
+    ) != "bert":
+        return None
+
+    print(
+        "\n"
+        "====================================================\n"
+        "BERT TINY-OVERFIT DIAGNOSTIC\n"
+        "===================================================="
+    )
+
+    text_vae = model.vaes[1]
+
+    pad_id = text_vae.dec.pad_token_id
+
+    n = min(
+        num_samples,
+        len(train_cluster_dataset),
+    )
+
+    subset = torch.utils.data.Subset(
+        train_cluster_dataset,
+        list(range(n)),
+    )
+
+    eval_loader = torch.utils.data.DataLoader(
+        subset,
+        batch_size=min(16, n),
+        shuffle=False,
+        num_workers=0,
+    )
+
+    generator = torch.Generator()
+    generator.manual_seed(12345)
+
+    overfit_loader = torch.utils.data.DataLoader(
+        subset,
+        batch_size=min(16, n),
+        shuffle=True,
+        num_workers=0,
+        generator=generator,
+    )
+
+    # ---------------------------------------------------------
+    # Preserve exact state
+    # ---------------------------------------------------------
+
+    decoder_state = {
+        key:
+            value.detach().cpu().clone()
+
+        for key, value
+        in text_vae.dec.state_dict().items()
+    }
+
+    requires_grad_state = [
+        p.requires_grad
+        for p in model.parameters()
+    ]
+
+    was_training = model.training
+
+    cpu_rng_state = (
+        torch.get_rng_state()
+    )
+
+    cuda_rng_state = (
+        torch.cuda.get_rng_state_all()
+        if torch.cuda.is_available()
+        else None
+    )
+
+    # ---------------------------------------------------------
+    # Freeze everything except decoder
+    # ---------------------------------------------------------
+
+    for p in model.parameters():
+        p.requires_grad_(False)
+
+    for p in text_vae.dec.parameters():
+        p.requires_grad_(True)
+
+    optimizer_diag = torch.optim.AdamW(
+        text_vae.dec.parameters(),
+        lr=lr,
+    )
+
+    def measure():
+
+        model.eval()
+
+        total_nll = 0.0
+        total_tokens = 0
+        correct_tokens = 0
+
+        sample_texts = []
+
+        with torch.no_grad():
+
+            for dataT in eval_loader:
+
+                data, _ = unpack_data_CUBcluster8(
+                    dataT,
+                    device=device,
+                )
+
+                captions = data[1]
+
+                q_params = text_vae.enc(
+                    captions
+                )
+
+                q_txt = text_vae.qu_x(
+                    *q_params
+                )
+
+                # Deterministic text posterior mean.
+                u = (
+                    q_txt.mean
+                    .unsqueeze(0)
+                    .detach()
+                )
+
+                px = text_vae.decode_likelihood(
+                    u
+                )
+
+                logp = px.log_prob(
+                    captions
+                )
+
+                valid = (
+                    captions != pad_id
+                )
+
+                pred = (
+                    px.mode
+                    .squeeze(0)
+                )
+
+                total_nll += (
+                    -logp.sum().item()
+                )
+
+                total_tokens += (
+                    valid.sum().item()
+                )
+
+                correct_tokens += (
+                    (
+                        (pred == captions)
+                        & valid
+                    )
+                    .sum()
+                    .item()
+                )
+
+                if len(sample_texts) < 5:
+
+                    refs = (
+                        text_vae.dec.decode_batch(
+                            captions
+                        )
+                    )
+
+                    preds = (
+                        text_vae.dec.decode_batch(
+                            pred
+                        )
+                    )
+
+                    for ref, prediction in zip(
+                        refs,
+                        preds,
+                    ):
+
+                        if len(sample_texts) >= 5:
+                            break
+
+                        sample_texts.append({
+                            "reference": ref,
+                            "prediction": prediction,
+                        })
+
+        return {
+            "nll_per_token":
+                total_nll
+                / max(total_tokens, 1),
+
+            "token_accuracy":
+                correct_tokens
+                / max(total_tokens, 1),
+
+            "examples":
+                sample_texts,
+        }
+
+    before = measure()
+
+    print(
+        "Before tiny overfit:",
+        before["nll_per_token"],
+        before["token_accuracy"],
     )
 
     # =========================================================
-    # Diversity
+    # TRAIN DECODER ONLY
     # =========================================================
 
-    num_correct = len(
-        generated_correct_all
+    text_vae.enc.eval()
+    text_vae.dec.train()
+
+    iterator = iter(
+        overfit_loader
     )
 
-    unique_correct = len(
-        set(generated_correct_all)
-    )
+    try:
 
-    unique_shuffled = len(
-        set(generated_shuffled_all)
-    )
+        for step in range(1, steps + 1):
 
-    print(
-        "\n"
-        "=========================================\n"
-        "=== BERT LATENT STATISTICS =============\n"
-        "========================================="
-    )
+            try:
 
-    print(
-        "w_txt |mean|:",
-        w_means.abs().mean().item(),
-    )
+                dataT = next(iterator)
 
-    print(
-        "w_txt between-sample std:",
-        between_sample_std(
-            w_means
-        ),
-    )
+            except StopIteration:
 
-    print(
-        "z_txt |mean|:",
-        z_means.abs().mean().item(),
-    )
+                iterator = iter(
+                    overfit_loader
+                )
 
-    print(
-        "z_txt between-sample std:",
-        between_sample_std(
-            z_means
-        ),
-    )
+                dataT = next(iterator)
 
-    print(
-        "w_txt scale mean:",
-        w_scales.mean().item(),
-    )
+            data, _ = unpack_data_CUBcluster8(
+                dataT,
+                device=device,
+            )
 
-    print(
-        "w_txt scale between-sample std:",
-        between_sample_std(
-            w_scales
-        ),
-    )
+            captions = data[1]
 
-    print(
-        "z_txt scale mean:",
-        z_scales.mean().item(),
-    )
+            # ---------------------------------------------
+            # Fixed conditioning latent from encoder.
+            # ---------------------------------------------
 
-    print(
-        "z_txt scale between-sample std:",
-        between_sample_std(
-            z_scales
-        ),
-    )
+            with torch.no_grad():
 
-    print(
-        "\n"
-        "=========================================\n"
-        "=== BERT LATENT USAGE ==================\n"
-        "========================================="
-    )
+                q_params = text_vae.enc(
+                    captions
+                )
 
-    print(
-        "NLL/token - correct latent:",
-        nll_correct,
-    )
+                q_txt = text_vae.qu_x(
+                    *q_params
+                )
 
-    print(
-        "NLL/token - shuffled latent:",
-        nll_shuffled,
-    )
+                u = (
+                    q_txt.mean
+                    .unsqueeze(0)
+                    .detach()
+                )
 
-    print(
-        "Shuffle NLL increase:",
-        nll_shuffled
-        - nll_correct,
-    )
+            px = text_vae.decode_likelihood(
+                u
+            )
 
-    print(
-        "Unique correct-latent generations:",
-        f"{unique_correct}/{num_correct}",
-    )
+            valid = (
+                captions != pad_id
+            )
 
-    print(
-        "Unique shuffled-latent generations:",
-        f"{unique_shuffled}/{num_correct}",
-    )
+            loss = (
+                -px.log_prob(
+                    captions
+                ).sum()
+                /
+                valid.sum().clamp_min(1)
+            )
 
-    print(
-        "Generation changed after latent shuffle:",
-        f"{num_changed_generations}/"
-        f"{num_compared_generations}",
-        "("
-        f"{100.0 * num_changed_generations / max(num_compared_generations, 1):.2f}%"
-        ")",
-    )
+            optimizer_diag.zero_grad(
+                set_to_none=True
+            )
 
-    print(
-        "Generated-token change rate after shuffle:",
-        100.0
-        * token_difference_sum
-        / max(token_difference_count, 1),
-        "%",
-    )
+            loss.backward()
 
-    print(
-        "\n"
-        "=== END BERT LATENT -> TEXT DIAGNOSTIC ===\n"
-    )
+            torch.nn.utils.clip_grad_norm_(
+                text_vae.dec.parameters(),
+                1.0,
+            )
 
+            optimizer_diag.step()
+
+            if (
+                step == 1
+                or step % 50 == 0
+                or step == steps
+            ):
+
+                print(
+                    f"Tiny-overfit step "
+                    f"{step}/{steps}: "
+                    f"NLL={loss.item():.4f}"
+                )
+
+        after = measure()
+
+        print(
+            "After tiny overfit:",
+            after["nll_per_token"],
+            after["token_accuracy"],
+        )
+
+        result = {
+            "epoch": epoch,
+            "num_samples": n,
+            "steps": steps,
+            "lr": lr,
+            "before": before,
+            "after": after,
+        }
+
+        output_dir = os.path.join(
+            runPath,
+            "bert_full_diagnostics",
+        )
+
+        os.makedirs(
+            output_dir,
+            exist_ok=True,
+        )
+
+        output_path = os.path.join(
+            output_dir,
+            f"tiny_overfit_epoch{epoch}.json",
+        )
+
+        with open(
+            output_path,
+            "w",
+            encoding="utf-8",
+        ) as f:
+
+            json.dump(
+                result,
+                f,
+                indent=4,
+                ensure_ascii=False,
+            )
+
+        print(
+            "Tiny-overfit results saved to:",
+            output_path,
+        )
+
+    finally:
+
+        # -----------------------------------------------------
+        # IMPORTANT:
+        # restore exact checkpoint decoder.
+        # -----------------------------------------------------
+
+        text_vae.dec.load_state_dict(
+            decoder_state
+        )
+
+        for p, requires_grad in zip(
+            model.parameters(),
+            requires_grad_state,
+        ):
+            p.requires_grad_(requires_grad)
+
+        if was_training:
+            model.train()
+        else:
+            model.eval()
+
+        torch.set_rng_state(
+            cpu_rng_state
+        )
+
+        if (
+            cuda_rng_state is not None
+            and torch.cuda.is_available()
+        ):
+            torch.cuda.set_rng_state_all(
+                cuda_rng_state
+            )
+
+        del optimizer_diag
+
+        gc.collect()
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    return result
 
 
 def first_pair_position_per_image(dataset_indices):
@@ -1253,6 +2191,38 @@ parser.add_argument(
         "Run BERT latent-to-text and "
         "caption-specific latent usage diagnostics."
     ),
+)
+
+parser.add_argument(
+    "--bert_diagnostic_max_batches",
+    type=int,
+    default=20,
+    help="Maximum batches per split for the full BERT diagnostic.",
+)
+
+parser.add_argument(
+    "--enable_bert_tiny_overfit_diagnostic",
+    action="store_true",
+    default=False,
+    help="Run the 64-sample BERT decoder overfit diagnostic.",
+)
+
+parser.add_argument(
+    "--bert_overfit_samples",
+    type=int,
+    default=64,
+)
+
+parser.add_argument(
+    "--bert_overfit_steps",
+    type=int,
+    default=300,
+)
+
+parser.add_argument(
+    "--bert_overfit_lr",
+    type=float,
+    default=1e-4,
 )
 
 #enable_qualitative_visuals
@@ -1873,6 +2843,14 @@ if args.dataset == 'UCF':
         shuffle=True,
         **kwargs
     )
+
+    train_cluster_eval_loader = torch.utils.data.DataLoader(
+        train_cluster_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        **kwargs
+    )
+
     val_cluster_loader = torch.utils.data.DataLoader(
         val_cluster_dataset,
         batch_size=args.batch_size,
@@ -4639,19 +5617,27 @@ def run_evaluation(epoch):
 @torch.inference_mode()
 def evaluate_wz_ablation(
     epoch,
+    loader=None,
+    dataset=None,
+    split_name=None,
 ):
     model.eval()
 
-    loader=test_time_loader
-    dataset=test_time_dataset
+    if loader is None:
+        loader = test_time_loader
 
+    if dataset is None:
+        dataset = test_time_dataset
+
+    if split_name is None:
+        split_name = args.test_time_dataset_state
     # loader = test_cluster_loader
     # dataset = test_cluster_dataset
 
     output_dir = os.path.join(
         runPath,
         "wz_ablation",
-        args.test_time_dataset_state,
+        split_name,
     )
 
     W = model.params.latent_dim_w
@@ -4993,6 +5979,72 @@ def evaluate_wz_ablation(
         )
 
 
+def run_all_bert_diagnostics(
+    epoch,
+):
+    if args.text_decoder_arch != "bert":
+        return
+
+    print(
+        "\n"
+        "####################################################\n"
+        "# RUNNING COMPLETE BERT/IDMVAE DIAGNOSTICS\n"
+        "####################################################"
+    )
+
+    # ========================================================
+    # TRAIN
+    # ========================================================
+
+    diagnose_bert_full_split(
+        epoch=epoch,
+        loader=train_cluster_eval_loader,
+        split_name="train",
+        max_batches=args.bert_diagnostic_max_batches,
+        num_examples=8,
+    )
+
+    evaluate_wz_ablation(
+        epoch=epoch,
+        loader=train_cluster_eval_loader,
+        dataset=train_cluster_dataset,
+        split_name="train",
+    )
+
+    # ========================================================
+    # TEST
+    # ========================================================
+
+    diagnose_bert_full_split(
+        epoch=epoch,
+        loader=test_cluster_loader,
+        split_name="test",
+        max_batches=args.bert_diagnostic_max_batches,
+        num_examples=8,
+    )
+
+    evaluate_wz_ablation(
+        epoch=epoch,
+        loader=test_cluster_loader,
+        dataset=test_cluster_dataset,
+        split_name="test",
+    )
+
+    # ========================================================
+    # TINY OVERFIT
+    # ========================================================
+
+    if args.enable_bert_tiny_overfit_diagnostic:
+
+        diagnose_bert_tiny_overfit(
+            epoch=epoch,
+            num_samples=args.bert_overfit_samples,
+            steps=args.bert_overfit_steps,
+            lr=args.bert_overfit_lr,
+        )
+
+
+
 if __name__ == '__main__':
     if args.test_only:
         print("--- Running in Test-Only Mode ---")
@@ -5012,8 +6064,21 @@ if __name__ == '__main__':
         model.load_state_dict(torch.load(checkpoint_to_load, map_location=device), strict=False)
         _log_param_counts(f"test_only_epoch_{epoch_to_test}")
 
-        # NEW
-        diagnose_bart_latent_usage(max_batches=5)
+        if (
+                args.enable_bart_latent_diagnostics
+                and args.text_decoder_arch == "bart"
+        ):
+            diagnose_bart_latent_usage(
+                max_batches=5
+            )
+
+        if (
+                args.enable_bert_latent_diagnostics
+                and args.text_decoder_arch == "bert"
+        ):
+            run_all_bert_diagnostics(
+                epoch=epoch_to_test
+            )
 
         evaluate_wz_ablation(
              epoch=epoch_to_test,
@@ -5067,15 +6132,6 @@ if __name__ == '__main__':
         for epoch in range(start_epoch, args.epochs + 1):
             train(epoch)
 
-            if (
-                    args.enable_bert_latent_diagnostics
-                    and args.text_decoder_arch == "bert"
-            ):
-                diagnose_bert_latent_to_text(
-                    max_batches=10,
-                    num_examples=8,
-                )
-
             model_checkpoint_path = os.path.join(runPath, f'model_{epoch}.rar')
             optimizer_checkpoint_path = os.path.join(runPath, f'optimizer_{epoch}.rar')
             save_model_light(model, model_checkpoint_path)
@@ -5085,4 +6141,13 @@ if __name__ == '__main__':
             _prune_checkpoints('optimizer', keep_recent=2, special_epochs_fn=_optimizer_special_epochs)
 
             if epoch % test_epoch_freq == 0:
+
+                if (
+                        args.enable_bert_latent_diagnostics
+                        and args.text_decoder_arch == "bert"
+                ):
+                    run_all_bert_diagnostics(
+                        epoch=epoch
+                    )
+
                 run_evaluation(epoch)

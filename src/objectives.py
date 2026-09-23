@@ -584,6 +584,10 @@ def compute_shared_z_alignment_loss(shared_dists):
     loss = 0.0
     num_pairs = 0
 
+    #text as a teacher modality
+    # mu_txt = shared_dists[1].loc.detach()
+    # sigma_txt = shared_dists[1].scale.detach()
+
     mu_txt = shared_dists[1].loc.detach()
     sigma_txt = shared_dists[1].scale.detach()
 

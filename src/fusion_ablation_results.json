@@ -1,0 +1,87 @@
+{
+  "image": "/home/chatziko/PycharmProjects/PythonProject/test_images_showo2/images.jpg",
+  "checkpoint": "/home/chatziko/PycharmProjects/PythonProject/Show-o/show-o2/showo2_qwen3_adapter_stage2_ucf/checkpoint_epoch_6.pt",
+  "prompt_file": "/home/chatziko/PycharmProjects/PythonProject/Show-o/show-o2/prompts/mmu_prompt.txt",
+  "fusion_formula": "alpha * Qwen3-VL + (1-alpha) * adapted Show-o2",
+  "qwen_mean_token_norm": 35.910125732421875,
+  "showo2_mean_token_norm": 28.07982063293457,
+  "results": [
+    {
+      "alpha_qwen": 0,
+      "beta_showo2": 1.0,
+      "qwen_norm": 35.910125732421875,
+      "showo2_norm": 28.07982063293457,
+      "output": "Observation: Woman seated in bedroom, smiling, wearing blue top; bed with dark headboard; framed painting on wall; lamp on nightstand.\nSignificance: No obvious signs of forced entry, damage, or tampering; no visible contraband or suspicious items; context suggests domestic setting.\nRisk: Low\nConfidence: High"
+    },
+    {
+      "alpha_qwen": 0.1,
+      "beta_showo2": 0.9,
+      "qwen_norm": 35.910125732421875,
+      "showo2_norm": 28.07982063293457,
+      "output": "Observation: Woman seated on bed in bedroom; framed painting on wall; lamp on nightstand; no visible weapons, forced entry, or digital devices.\nSignificance: No immediate indicators of criminal activity, violence, or fraud. Scene appears residential and non-threatening.\nRisk: Low\nConfidence: High"
+    },
+    {
+      "alpha_qwen": 0.2,
+      "beta_showo2": 0.8,
+      "qwen_norm": 35.910125732421875,
+      "showo2_norm": 28.07982063293457,
+      "output": "Observation: Woman seated on bed in bedroom; framed painting on wall; lamp on nightstand; no visible weapons, forced entry, or suspicious items.\nSignificance: No immediate indicators of criminal activity or threat; scene appears residential and non-confrontational.\nRisk: Low\nConfidence: High"
+    },
+    {
+      "alpha_qwen": 0.3,
+      "beta_showo2": 0.7,
+      "qwen_norm": 35.910125732421875,
+      "showo2_norm": 28.07982063293457,
+      "output": "Observation: Woman in bedroom, smiling, taking selfie; bed with dark headboard; framed painting on wall; lamp on nightstand.\nSignificance: No immediate signs of forced entry, violence, or concealment; environment appears residential and non-threatening.\nRisk: Low\nConfidence: High"
+    },
+    {
+      "alpha_qwen": 0.4,
+      "beta_showo2": 0.6,
+      "qwen_norm": 35.910125732421875,
+      "showo2_norm": 28.07982063293457,
+      "output": "Observation: Woman in bedroom, smiling, taking selfie; bed with dark headboard; framed painting on wall; lamp on nightstand.\nSignificance: No obvious signs of forced entry, damage, or tampering; environment appears residential and undisturbed; no evidence of concealment or active threat.\nRisk: Low\nConfidence: High"
+    },
+    {
+      "alpha_qwen": 0.5,
+      "beta_showo2": 0.5,
+      "qwen_norm": 35.910125732421875,
+      "showo2_norm": 28.07982063293457,
+      "output": "Observation: Woman in bedroom taking selfie; bed with dark headboard; framed painting on wall; lamp on nightstand.\nSignificance: Domestic setting; no signs of forced entry, damage, or suspicious items; no evidence of recent conflict or criminal activity.\nRisk: Low\nConfidence: High"
+    },
+    {
+      "alpha_qwen": 0.6,
+      "beta_showo2": 0.4,
+      "qwen_norm": 35.910125732421875,
+      "showo2_norm": 28.07982063293457,
+      "output": "Observation: Woman taking selfie in bedroom; bed with dark headboard; framed painting on wall; lamp on nightstand.\nSignificance: Domestic setting; no signs of forced entry, damage, or suspicious items; no evidence of recent conflict or criminal activity.\nRisk: Low\nConfidence: High"
+    },
+    {
+      "alpha_qwen": 0.7,
+      "beta_showo2": 0.30000000000000004,
+      "qwen_norm": 35.910125732421875,
+      "showo2_norm": 28.07982063293457,
+      "output": "Observation: Woman taking selfie in bedroom; bed with dark headboard; framed painting on wall; lamp on nightstand.\nSignificance: Domestic setting; no signs of forced entry, damage, or suspicious items; no evidence of recent conflict or criminal activity.\nRisk: Low\nConfidence: High"
+    },
+    {
+      "alpha_qwen": 0.8,
+      "beta_showo2": 0.19999999999999996,
+      "qwen_norm": 35.910125732421875,
+      "showo2_norm": 28.07982063293457,
+      "output": "Observation: Woman taking selfie in bedroom; bed with dark headboard; framed painting on wall; lamp on nightstand.\nSignificance: Domestic setting; no signs of forced entry, damage, or suspicious items; no evidence of recent conflict or criminal activity.\nRisk: Low\nConfidence: High"
+    },
+    {
+      "alpha_qwen": 0.9,
+      "beta_showo2": 0.09999999999999998,
+      "qwen_norm": 35.910125732421875,
+      "showo2_norm": 28.07982063293457,
+      "output": "Observation: Woman taking selfie in bedroom; bed, nightstand, lamp, framed painting visible.\nSignificance: No immediate signs of forced entry, damage, or suspicious items; environment appears residential and undisturbed.\nRisk: Low\nConfidence: High\n\nObservation: No visible weapons, electronics, or evidence of forced entry or tampering.\nSignificance: Suggests no active criminal activity or threat in the immediate scene.\nRisk: Low\nConfidence: High\n\nObservation: No visible cash, documents, or digital devices with indicators of fraud or cybercrime.\nSignificance: No evidence of financial or digital crime in this frame.\nRisk: Low\nConfidence: High\n\nObservation: No signs of concealment, trafficking, or violent activity.\nSignificance: Environment appears normal; no indicators of illicit activity.\nRisk: Low\nConfidence: High"
+    },
+    {
+      "alpha_qwen": 1.0,
+      "beta_showo2": 0.0,
+      "qwen_norm": 35.910125732421875,
+      "showo2_norm": 28.07982063293457,
+      "output": "Observation: Woman taking selfie in bedroom; bed with dark headboard; framed painting on wall; lamp on nightstand.\nSignificance: Domestic setting; no signs of forced entry, damage, or suspicious items; no evidence of recent conflict or criminal activity.\nRisk: Low\nConfidence: High"
+    }
+  ]
+}
