@@ -49,8 +49,105 @@ import torch
 from PIL import Image
 from transformers import AutoProcessor
 
+def captions_equivalent(a: str, b: str) -> bool:
+    def clean(x):
+        x = normalize_caption(x).lower().strip()
+        x = x.rstrip(".!?")
+        return x
 
-DEFAULT_CAPTION_PROMPT = """Describe the main visible content of this image in one simple factual English sentence of 8–15 words.
+    return clean(a) == clean(b)
+
+def get_model_family(model_name: str) -> str:
+    name = model_name.lower()
+
+    if "florence" in name:
+        return "florence"
+
+    if "paligemma" in name:
+        return "paligemma"
+
+    if "qwen" in name:
+        return "qwen"
+
+    return "generic"
+
+def get_caption_prompt(args) -> str:
+    if args.caption_prompt is not None:
+        return args.caption_prompt
+
+    family = get_model_family(args.model)
+
+    if family == "florence":
+        return args.florence_task
+
+    if family == "paligemma":
+        return PALIGEMMA_CAPTION_PROMPT
+
+    return QWEN_CAPTION_PROMPT
+
+
+def load_model(model_name, dtype, device_map, trust_remote_code):
+    family = get_model_family(model_name)
+    errors = []
+
+    if family == "florence":
+        try:
+            from transformers import Florence2ForConditionalGeneration
+
+            return Florence2ForConditionalGeneration.from_pretrained(
+                model_name,
+                torch_dtype=dtype,
+                device_map=device_map,
+            )
+        except Exception as exc:
+            errors.append(("Florence2ForConditionalGeneration", exc))
+
+    try:
+        from transformers import AutoModelForImageTextToText
+
+        return AutoModelForImageTextToText.from_pretrained(
+            model_name,
+            torch_dtype=dtype,
+            device_map=device_map,
+            trust_remote_code=trust_remote_code,
+        )
+    except Exception as exc:
+        errors.append(("AutoModelForImageTextToText", exc))
+
+    try:
+        from transformers import Qwen2_5_VLForConditionalGeneration
+
+        return Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            model_name,
+            torch_dtype=dtype,
+            device_map=device_map,
+            trust_remote_code=trust_remote_code,
+        )
+    except Exception as exc:
+        errors.append(("Qwen2_5_VLForConditionalGeneration", exc))
+
+    try:
+        from transformers import AutoModelForVision2Seq
+
+        return AutoModelForVision2Seq.from_pretrained(
+            model_name,
+            torch_dtype=dtype,
+            device_map=device_map,
+            trust_remote_code=trust_remote_code,
+        )
+    except Exception as exc:
+        errors.append(("AutoModelForVision2Seq", exc))
+
+    message = " | ".join(
+        f"{name}: {exc}"
+        for name, exc in errors
+    )
+
+    raise RuntimeError(
+        f"Could not load model {model_name!r}. {message}"
+    )
+
+QWEN_CAPTION_PROMPT = """Describe the main visible content of this image in one simple factual English sentence of 8–15 words.
 
 Mention only the most important people, clearly visible actions or posture, objects, vehicles, and immediate surroundings.
 
@@ -58,13 +155,11 @@ Describe only what can be directly seen in this single image.
 
 Do not infer intentions, causes, crimes, identities, or events before or after the image.
 
-Do not mention timestamps, dates, watermarks, camera labels, CCTV, surveillance footage, image quality, or text overlays.
-
-Do not use uncertain phrases such as "possibly", "probably", "appears to be", or "seems to".
-
-Prefer a simple subject–verb–object sentence.
-
 Output only the caption."""
+
+PALIGEMMA_CAPTION_PROMPT = "describe en\n"
+
+FLORENCE_CAPTION_PROMPT = "<MORE_DETAILED_CAPTION>"
 
 VERIFY_PROMPT_TEMPLATE = """Check whether the proposed caption is fully supported by this single surveillance image.
 
@@ -83,6 +178,17 @@ Return EXACTLY one JSON object and nothing else:
 or
 {{\"supported\": false, \"caption\": \"rewritten caption text\"}}"""
 
+PALIGEMMA_VERIFY_PROMPT_TEMPLATE = """Check this caption against the image:
+
+"{caption}"
+
+Rewrite the caption so that it contains only information directly visible in the image.
+
+Do not infer intentions, identities, crimes, causes, or events before or after the image.
+
+If the caption is already fully supported by the image, repeat it unchanged.
+
+Output only the final caption."""
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -95,28 +201,31 @@ def parse_args() -> argparse.Namespace:
         help="Root containing train/, validation/, and test/.",
     )
     parser.add_argument(
-        "--mode", choices=["caption", "verify"], default="verify"
+        "--mode",
+        choices=["caption", "verify", "both"],
+        default="caption"
     )
     parser.add_argument(
         "--model",
         type=str,
-        default="Qwen/Qwen2.5-VL-3B-Instruct",
+        #default="Qwen/Qwen2.5-VL-3B-Instruct",
         #default="google/paligemma2-3b-mix-448",
+        default="florence-community/Florence-2-large-ft",
         help="Hugging Face VLM checkpoint.",
     )
     parser.add_argument(
         "--splits",
         nargs="+",
-        choices=["train", "validation", "test"],
-        default=["train", "validation", "test"],
+        choices=["train", "validation", "test", "one_frame_per_video_split",],
+        default=["one_frame_per_video_split"],
     )
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=128,
+        default=32,
         help="Images per batch. Reduce this if VRAM is insufficient.",
     )
-    parser.add_argument("--max-new-tokens", type=int, default=64)
+    parser.add_argument("--max-new-tokens", type=int, default=256)
     parser.add_argument(
         "--max-images",
         type=int,
@@ -127,10 +236,10 @@ def parse_args() -> argparse.Namespace:
         "--caption-input-name", type=str, default="metadata.jsonl"
     )
     parser.add_argument(
-        "--caption-output-name", type=str, default="captions_vlm.jsonl"
+        "--caption-output-name", type=str, default="captions_florence_more_detailed.jsonl"
     )
     parser.add_argument(
-        "--verify-output-name", type=str, default="captions_verified.jsonl"
+        "--verify-output-name", type=str, default="captions_verified_florence_detailed.jsonl"
     )
     parser.add_argument(
         "--overwrite",
@@ -145,8 +254,22 @@ def parse_args() -> argparse.Namespace:
         choices=["auto", "bfloat16", "float16", "float32"],
         default="auto",
     )
+
     parser.add_argument(
-        "--caption-prompt", type=str, default=DEFAULT_CAPTION_PROMPT
+        "--caption-prompt",
+        type=str,
+        default=None,
+        help="Optional custom caption prompt. If omitted, a model-specific prompt is used.",
+    )
+
+    parser.add_argument(
+        "--florence-task",
+        choices=[
+            "<CAPTION>",
+            "<DETAILED_CAPTION>",
+            "<MORE_DETAILED_CAPTION>",
+        ],
+        default="<MORE_DETAILED_CAPTION>",
     )
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument(
@@ -188,45 +311,6 @@ def choose_dtype(name: str):
     return torch.float32
 
 
-def load_model(model_name: str, dtype, device_map: str, trust_remote_code: bool):
-    """Load a multimodal generation model with compatibility fallbacks."""
-    errors = []
-
-    try:
-        from transformers import AutoModelForImageTextToText
-        return AutoModelForImageTextToText.from_pretrained(
-            model_name,
-            torch_dtype=dtype,
-            device_map=device_map,
-            trust_remote_code=trust_remote_code,
-        )
-    except Exception as exc:
-        errors.append(("AutoModelForImageTextToText", exc))
-
-    try:
-        from transformers import Qwen2_5_VLForConditionalGeneration
-        return Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            model_name,
-            torch_dtype=dtype,
-            device_map=device_map,
-            trust_remote_code=trust_remote_code,
-        )
-    except Exception as exc:
-        errors.append(("Qwen2_5_VLForConditionalGeneration", exc))
-
-    try:
-        from transformers import AutoModelForVision2Seq
-        return AutoModelForVision2Seq.from_pretrained(
-            model_name,
-            torch_dtype=dtype,
-            device_map=device_map,
-            trust_remote_code=trust_remote_code,
-        )
-    except Exception as exc:
-        errors.append(("AutoModelForVision2Seq", exc))
-
-    message = " | ".join(f"{name}: {exc}" for name, exc in errors)
-    raise RuntimeError(f"Could not load model {model_name!r}. {message}")
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -309,7 +393,6 @@ def build_chat_text(processor, prompt: str) -> str:
         }
     ]
 
-    # Use chat template only if the processor actually provides one.
     if (
         hasattr(processor, "apply_chat_template")
         and getattr(processor, "chat_template", None)
@@ -320,8 +403,8 @@ def build_chat_text(processor, prompt: str) -> str:
             add_generation_prompt=True,
         )
 
-    # PaliGemma does not require a chat template.
-    return prompt
+    # PaliGemma
+    return f"<image>{prompt}"
 
 
 def move_inputs(inputs, model):
@@ -343,24 +426,125 @@ def move_inputs(inputs, model):
 
 def normalize_caption(text: str) -> str:
     text = text.strip()
+
+    # Remove padding tokens left by batched Florence generation
+    text = text.replace("<pad>", "")
+
     text = re.sub(r"^```(?:json|text)?\s*", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s*```$", "", text)
     text = text.strip()
+
     if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
         text = text[1:-1].strip()
+
     return " ".join(text.split())
 
 
-def generate_batch(model, processor, images, prompts, max_new_tokens: int) -> list[str]:
-    texts = [build_chat_text(processor, p) for p in prompts]
+def generate_batch(
+    model,
+    processor,
+    images,
+    prompts,
+    max_new_tokens: int,
+    model_name: str,
+) -> list[str]:
+
+    family = get_model_family(model_name)
+
+    # ==========================================================
+    # FLORENCE-2
+    # ==========================================================
+    if family == "florence":
+
+        inputs = processor(
+            text=prompts,
+            images=images,
+            padding=True,
+            return_tensors="pt",
+        )
+
+        inputs = move_inputs(inputs, model)
+
+        with torch.inference_mode():
+            generated_ids = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                num_beams=3,
+                do_sample=False,
+            )
+
+        generated_texts = processor.batch_decode(
+            generated_ids,
+            skip_special_tokens=False,
+        )
+
+        outputs = []
+
+        for generated_text, image, task_prompt in zip(
+            generated_texts,
+            images,
+            prompts,
+        ):
+            parsed = processor.post_process_generation(
+                generated_text,
+                task=task_prompt,
+                image_size=image.size,
+            )
+
+            caption = parsed.get(
+                task_prompt,
+                "",
+            )
+
+            outputs.append(
+                normalize_caption(
+                    str(caption)
+                )
+            )
+
+        return outputs
+
+    # ==========================================================
+    # QWEN
+    # ==========================================================
+    if family == "qwen":
+
+        texts = [
+            build_chat_text(
+                processor,
+                prompt,
+            )
+            for prompt in prompts
+        ]
+
+    # ==========================================================
+    # PALIGEMMA
+    # ==========================================================
+    elif family == "paligemma":
+
+        # No chat template.
+        # PaliGemma mix expects prompts such as:
+        # "caption en\n" or "describe en\n"
+        texts = prompts
+
+    else:
+        texts = prompts
+
     inputs = processor(
         text=texts,
         images=images,
         padding=True,
         return_tensors="pt",
     )
-    inputs = move_inputs(inputs, model)
-    input_length = inputs["input_ids"].shape[1]
+
+    inputs = move_inputs(
+        inputs,
+        model,
+    )
+
+    input_length = (
+        inputs["input_ids"].shape[1]
+    )
 
     with torch.inference_mode():
         generated = model.generate(
@@ -370,13 +554,21 @@ def generate_batch(model, processor, images, prompts, max_new_tokens: int) -> li
             use_cache=True,
         )
 
-    generated = generated[:, input_length:]
+    generated = generated[
+        :,
+        input_length:
+    ]
+
     outputs = processor.batch_decode(
         generated,
         skip_special_tokens=True,
         clean_up_tokenization_spaces=False,
     )
-    return [normalize_caption(x) for x in outputs]
+
+    return [
+        normalize_caption(x)
+        for x in outputs
+    ]
 
 
 def extract_json_object(text: str) -> dict[str, Any] | None:
@@ -440,12 +632,15 @@ def caption_split(args, split: str, model, processor) -> None:
                 continue
 
             try:
+                caption_prompt = get_caption_prompt(args)
+
                 captions = generate_batch(
                     model,
                     processor,
                     images,
-                    [args.caption_prompt] * len(images),
+                    [caption_prompt] * len(images),
                     args.max_new_tokens,
+                    args.model,
                 )
             except torch.cuda.OutOfMemoryError:
                 logging.error(
@@ -463,7 +658,11 @@ def caption_split(args, split: str, model, processor) -> None:
                     "generated_caption": caption,
                     "caption_status": "generated" if caption else "empty_generation",
                     "caption_model": args.model,
-                    "caption_prompt_version": "uca_image_only_v1",
+                    "caption_prompt_version": (
+                    "florence_more_detailed_caption"
+                    if get_model_family(args.model) == "florence"
+                    else "uca_image_only_v1"
+                ),
                 })
                 append_jsonl(out, result)
                 processed += 1
@@ -474,6 +673,15 @@ def caption_split(args, split: str, model, processor) -> None:
 
 
 def verify_split(args, split: str, model, processor) -> None:
+
+    family = get_model_family(args.model)
+
+    if family == "florence":
+        raise ValueError(
+            "Florence-2 supports caption generation in this script, "
+            "but not the free-form verification mode."
+        )
+
     split_dir = args.data_root / split
     input_path = split_dir / args.caption_output_name
     output_path = split_dir / args.verify_output_name
@@ -511,7 +719,19 @@ def verify_split(args, split: str, model, processor) -> None:
                     images.append(open_rgb(image_path))
                     valid_rows.append(row)
                     safe_caption = str(row["generated_caption"]).replace('"', '\\"')
-                    prompts.append(VERIFY_PROMPT_TEMPLATE.format(caption=safe_caption))
+
+                    if "paligemma" in args.model.lower():
+                        prompt = PALIGEMMA_VERIFY_PROMPT_TEMPLATE.format(
+                            caption=safe_caption
+                        )
+                    else:
+                        prompt = VERIFY_PROMPT_TEMPLATE.format(
+                            caption=safe_caption
+                        )
+
+                    prompts.append(prompt)
+
+
                 except Exception as exc:
                     logging.exception("[%s verify] Failed to load %s", split, row.get("image"))
                     result = dict(row)
@@ -545,20 +765,76 @@ def verify_split(args, split: str, model, processor) -> None:
                     image.close()
 
             for row, raw in zip(valid_rows, raw_outputs):
-                parsed = extract_json_object(raw)
-                if parsed is None:
-                    supported = None
-                    final_caption = str(row["generated_caption"])
-                    status = "parse_error"
-                    parse_errors += 1
-                else:
-                    supported = bool(parsed.get("supported"))
-                    final_caption = normalize_caption(
-                        str(parsed.get("caption") or row["generated_caption"])
+                if "paligemma" in args.model.lower():
+
+                    original_caption = normalize_caption(
+                        str(row["generated_caption"])
                     )
-                    status = "passed" if supported else "rewritten"
-                    if not supported:
+
+                    final_caption = normalize_caption(raw)
+
+                    if not final_caption:
+                        supported = None
+                        final_caption = original_caption
+                        status = "parse_error"
+                        parse_errors += 1
+
+
+                    elif captions_equivalent(final_caption, original_caption):
+
+                        supported = True
+                        final_caption = original_caption
+                        status = "passed"
+
+                    else:
+                        supported = False
+                        status = "rewritten"
                         rewritten += 1
+
+                else:
+
+                    parsed = extract_json_object(raw)
+
+                    if parsed is None:
+                        supported = None
+                        final_caption = str(row["generated_caption"])
+                        status = "parse_error"
+                        parse_errors += 1
+
+                    else:
+                        supported_value = parsed.get("supported")
+
+                        if isinstance(supported_value, bool):
+                            supported = supported_value
+                        elif isinstance(supported_value, str):
+                            value = supported_value.strip().lower()
+
+                            if value == "true":
+                                supported = True
+                            elif value == "false":
+                                supported = False
+                            else:
+                                supported = None
+                        else:
+                            supported = None
+
+                        if supported is None:
+                            final_caption = str(row["generated_caption"])
+                            status = "parse_error"
+                            parse_errors += 1
+
+                        else:
+                            final_caption = normalize_caption(
+                                str(
+                                    parsed.get("caption")
+                                    or row["generated_caption"]
+                                )
+                            )
+
+                            status = "passed" if supported else "rewritten"
+
+                            if not supported:
+                                rewritten += 1
 
                 result = dict(row)
                 result.update({
@@ -610,15 +886,25 @@ def main() -> int:
     )
     model.eval()
 
-    for split in args.splits:
-        if args.mode == "caption":
+    if args.mode in ("caption", "both"):
+        logging.info("Starting caption generation.")
+
+        for split in args.splits:
             caption_split(args, split, model, processor)
-        else:
+
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    if args.mode in ("verify", "both"):
+        logging.info("Starting caption verification.")
+
+        for split in args.splits:
             verify_split(args, split, model, processor)
 
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     logging.info("All requested splits completed.")
     return 0

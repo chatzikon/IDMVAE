@@ -58,6 +58,103 @@ image_transform = transforms.Compose([
     transforms.ToTensor(),
 ])
 
+def create_verified_captions_only() -> None:
+    """
+    Create a new captions tensor using the verified Qwen captions.
+
+    This does NOT modify any of the existing processed dataset files.
+    It only creates:
+        processed/captions_qwen_verified.pt
+    """
+
+    output_path = OUTPUT_DIR / "captions_qwen_verified.pt"
+
+    captions: list[list[str]] = []
+
+    total_passed = 0
+    total_rewritten = 0
+
+    for split_name in ("train", "val", "test"):
+        split_dir = SPLIT_DIRS[split_name]
+        verified_path = split_dir / "captions_verified.jsonl"
+
+        if not verified_path.is_file():
+            raise FileNotFoundError(
+                f"Verified caption file does not exist: {verified_path}"
+            )
+
+        records = load_jsonl(verified_path)
+
+        split_passed = 0
+        split_rewritten = 0
+
+        for index, record in enumerate(records):
+            if "verified_caption" not in record:
+                raise ValueError(
+                    f"Missing 'verified_caption' in "
+                    f"{verified_path}, record {index}."
+                )
+
+            status = record.get("verification_status")
+
+            if status not in {"passed", "rewritten"}:
+                raise ValueError(
+                    f"Invalid verification status {status!r} in "
+                    f"{verified_path}, record {index}."
+                )
+
+            caption = str(record["verified_caption"]).strip()
+
+            if not caption:
+                raise ValueError(
+                    f"Empty verified caption in "
+                    f"{verified_path}, record {index}."
+                )
+
+            # Keep exactly the format expected by IDMVAE:
+            # one list of captions per image.
+            captions.append([caption])
+
+            if status == "passed":
+                split_passed += 1
+            else:
+                split_rewritten += 1
+
+        total_passed += split_passed
+        total_rewritten += split_rewritten
+
+        print(
+            f"{split_name}: {len(records)} captions | "
+            f"passed={split_passed} | "
+            f"rewritten={split_rewritten}"
+        )
+
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Protect the old/new file from accidental overwrite.
+    if output_path.exists():
+        raise FileExistsError(
+            f"Output already exists: {output_path}\n"
+            "Delete or rename it explicitly if you want to recreate it."
+        )
+
+    torch.save(captions, output_path)
+
+    total = len(captions)
+
+    print("\nVerified captions successfully created")
+    print("--------------------------------------")
+    print(f"Output:     {output_path}")
+    print(f"Captions:   {total}")
+    print(f"Passed:     {total_passed}")
+    print(f"Rewritten:  {total_rewritten}")
+
+    if total:
+        print(
+            f"Rewritten %: "
+            f"{100.0 * total_rewritten / total:.2f}%"
+        )
+
 def load_image(image_path: Path) -> torch.Tensor:
     """
     Load every image as a three-channel float tensor in [0, 1].
@@ -452,4 +549,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    #main()
+    create_verified_captions_only()
